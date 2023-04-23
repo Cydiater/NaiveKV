@@ -32,7 +32,7 @@ RetCode Engine::remove(const Key &key) {
 }
 
 RetCode Engine::get(const Key &key, Value &value) {
-  return mut_->get({key, current_lsn_++}, value);
+  return mut_->get({key, current_lsn_.fetch_add(1)}, value);
 }
 
 RetCode Engine::sync() {
