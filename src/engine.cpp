@@ -1,27 +1,28 @@
 #include "engine.h"
+#include "interfaces.h"
+#include "memtable.hpp"
+#include <memory>
 
 namespace kvs {
 Engine::Engine(const std::string &path, EngineOptions options) {
   std::ignore = path;
   std::ignore = options;
+  mut_ = std::make_unique<Memtable>();
+  current_lsn_ = 0;
 }
 
 Engine::~Engine() {}
 
 RetCode Engine::put(const Key &key, const Value &value) {
-  std::ignore = key;
-  std::ignore = value;
-  return kNotSupported;
+  mut_->insert({key, current_lsn_++}, value);
+  return RetCode::kSucc;
 }
 RetCode Engine::remove(const Key &key) {
-  std::ignore = key;
-  return kNotSupported;
+  return mut_->remove({key, current_lsn_++});
 }
 
 RetCode Engine::get(const Key &key, Value &value) {
-  std::ignore = key;
-  std::ignore = value;
-  return kNotSupported;
+  return mut_->get({key, current_lsn_++}, value);
 }
 
 RetCode Engine::sync() { return kNotSupported; }
