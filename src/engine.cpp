@@ -4,21 +4,29 @@
 #include <memory>
 
 namespace kvs {
-Engine::Engine(const std::string &path, EngineOptions options) {
+Engine::Engine(const std::string &path, EngineOptions options)
+    : log_mgr_(std::make_unique<LogManager>(path)) {
   std::ignore = path;
   std::ignore = options;
   mut_ = std::make_unique<Memtable>();
   current_lsn_ = 0;
+  const auto &[imm_init, mem_init] = log_mgr_->dump_for_recovering();
+  imm_ = std::make_unique<Memtable>(imm_init);
+  mut_ = std::make_unique<Memtable>(mem_init);
+  for (auto &kv : imm_init)
+    current_lsn_ = std::max(kv.first.second, current_lsn_);
+  for (auto &kv : mem_init)
+    current_lsn_ = std::max(kv.first.second, current_lsn_);
 }
 
 Engine::~Engine() {}
 
 RetCode Engine::put(const Key &key, const Value &value) {
-  mut_->insert({key, current_lsn_++}, value);
+  mut_->insert({key, current_lsn_++}, value, log_mgr_.get());
   return RetCode::kSucc;
 }
 RetCode Engine::remove(const Key &key) {
-  return mut_->remove({key, current_lsn_++});
+  return mut_->remove({key, current_lsn_++}, log_mgr_.get());
 }
 
 RetCode Engine::get(const Key &key, Value &value) {
