@@ -9,15 +9,16 @@
 #include "defines.h"
 #include "interfaces.h"
 #include "log_manager.hpp"
+#include "ordered_iteratable.hpp"
 
 namespace kvs {
 
 class Memtable {
 
+public:
   using Map = std::map<TaggedKey, TaggedValue>;
   using Iter = Map::const_iterator;
 
-public:
   Memtable() = default;
   Memtable(const std::vector<std::pair<TaggedKey, TaggedValue>> &init)
       : kv_(init.begin(), init.end()) {}
@@ -71,6 +72,19 @@ private:
 
   std::shared_mutex mutex_;
   Map kv_;
+};
+
+class MemtableIterator : public OrderedIterater {
+public:
+  std::optional<InternalKV> next() override {
+    if (it == end)
+      return {};
+    return *it++;
+  }
+
+private:
+  Memtable::Map::const_iterator it;
+  Memtable::Map::const_iterator end;
 };
 
 } // namespace kvs
