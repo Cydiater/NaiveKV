@@ -14,26 +14,31 @@ Engine::Engine(const std::string &path, EngineOptions options)
   imm_ = std::make_unique<Memtable>(imm_init);
   mut_ = std::make_unique<Memtable>(mem_init);
   for (auto &kv : imm_init)
-    current_lsn_ = std::max(kv.first.second, current_lsn_);
+    current_lsn_ = std::max(kv.first.second, current_lsn_.load());
   for (auto &kv : mem_init)
-    current_lsn_ = std::max(kv.first.second, current_lsn_);
+    current_lsn_ = std::max(kv.first.second, current_lsn_.load());
 }
 
 Engine::~Engine() {}
 
 RetCode Engine::put(const Key &key, const Value &value) {
-  mut_->insert({key, current_lsn_++}, value, log_mgr_.get());
+  auto lsn = current_lsn_.fetch_add(1);
+  mut_->insert({key, lsn}, value, log_mgr_.get());
   return RetCode::kSucc;
 }
 RetCode Engine::remove(const Key &key) {
-  return mut_->remove({key, current_lsn_++}, log_mgr_.get());
+  auto lsn = current_lsn_.fetch_add(1);
+  return mut_->remove({key, lsn}, log_mgr_.get());
 }
 
 RetCode Engine::get(const Key &key, Value &value) {
   return mut_->get({key, current_lsn_++}, value);
 }
 
-RetCode Engine::sync() { return kNotSupported; }
+RetCode Engine::sync() {
+  log_mgr_->flush();
+  return RetCode::kSucc;
+}
 
 RetCode Engine::visit(const Key &lower, const Key &upper,
                       const Visitor &visitor) {

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstdio>
 #include <mutex>
+#include <ostream>
 #include <string>
 
 #include "conf.h"
@@ -19,6 +20,7 @@ public:
   ~LogManager() {
     if (mode == Mode::Logging) {
       std::fflush(mem_fd);
+      std::fclose(mem_fd);
     }
   }
 
@@ -60,6 +62,11 @@ public:
     const auto &[tagged_key, tagged_val] = kv;
     fprintf(mem_fd, "%s %llu %s %d\n", tagged_key.first.c_str(),
             tagged_key.second, tagged_val.first.c_str(), tagged_val.second);
+  }
+
+  void flush() {
+    assert(mode == Mode::Logging);
+    std::fflush(mem_fd);
   }
 
 private:

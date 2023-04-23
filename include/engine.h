@@ -37,7 +37,7 @@ public:
   RetCode garbage_collect() override;
 
 private:
-  uint64_t current_lsn_;
+  std::atomic<uint64_t> current_lsn_;
   std::unique_ptr<Memtable> mut_;
   std::unique_ptr<Memtable> imm_;
   std::unique_ptr<LogManager> log_mgr_;
