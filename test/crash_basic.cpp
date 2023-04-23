@@ -55,6 +55,7 @@ int main(int argc, char *argv[])
         CHECK_EQ(engine->put("a", "def"), kSucc);
         CHECK_EQ(engine->remove("b"), kSucc);
         CHECK_EQ(engine->remove("c"), kSucc);
+        CHECK_EQ(engine->sync(), kSucc);
         kill(getppid(), SIGUSR1);
         while (true)
         {
