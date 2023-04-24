@@ -47,6 +47,7 @@ private:
   std::unique_ptr<Memtable> mut_;
   std::unique_ptr<Memtable> imm_;
   std::unique_ptr<LogManager> log_mgr_;
+  std::unique_ptr<Versions> versions_;
 
   std::shared_mutex
       checking_mem /* make sure that mut_ and imm_ stay unchanged */;

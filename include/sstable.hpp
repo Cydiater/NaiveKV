@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdlib>
+#include <filesystem>
 #include <set>
 #include <string>
 #include <unistd.h>
@@ -15,7 +16,7 @@ namespace kvs {
 class SSTableBuilder {
 public:
   SSTableBuilder(std::vector<std::unique_ptr<OrderedIterater>> sources)
-      : sources_{sources} {}
+      : sources_{std::move(sources)} {}
 
   std::optional<std::string> build() {
     uint64_t offset = 0,
@@ -79,7 +80,21 @@ private:
   char buf[kMaxTableSize * 2];
 };
 
-class SSTable {};
+class SSTable {
+public:
+  SSTable(const std::string &filename) : filename_(filename) {
+    fd = std::fopen(filename_.c_str(), "r");
+  }
+
+  ~SSTable() {
+    std::fclose(fd);
+    std::filesystem::remove(filename_);
+  }
+
+private:
+  std::string filename_;
+  FILE *fd;
+};
 
 class SSTableIterator : public OrderedIterater {};
 
