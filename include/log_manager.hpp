@@ -25,6 +25,11 @@ public:
     }
   }
 
+  void rm_imm_log() {
+    assert(mode == Mode::Logging);
+    std::filesystem::remove(filename_imm_log);
+  }
+
   std::pair<std::vector<InternalKV>, std::vector<InternalKV>>
   dump_for_recovering() {
     std::vector<InternalKV> imm_init = {}, mem_init = {};

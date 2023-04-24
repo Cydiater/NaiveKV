@@ -32,6 +32,13 @@ void Engine::background() {
     bg_scheduled = false;
     if (killed)
       break;
+    checking_mem.lock();
+    if (imm_ != nullptr) {
+      versions_->StoreImmtable(imm_.get());
+      log_mgr_->rm_imm_log();
+      imm_ = nullptr;
+    }
+    checking_mem.unlock();
   }
 }
 
@@ -70,18 +77,33 @@ RetCode Engine::put(const Key &key, const Value &value) {
   check_mem();
   return RetCode::kSucc;
 }
+
 RetCode Engine::remove(const Key &key) {
   {
+    auto version = versions_->get_latest();
     auto lock = std::shared_lock<std::shared_mutex>(checking_mem);
     auto lsn = current_lsn_.fetch_add(1);
     std::string _val;
     auto ret = mut_->get({key, lsn}, _val);
+    if (ret == true)
+      goto do_remove;
     if (ret == false)
       return kNotFound;
-    if (!ret.has_value()) {
-      if (imm_ == nullptr || imm_->get({key, lsn}, _val) != true)
+    if (imm_ != nullptr) {
+      ret = imm_->get({key, lsn}, _val);
+      if (ret == true)
+        goto do_remove;
+      if (ret == false)
         return kNotFound;
     }
+    if (version != nullptr) {
+      ret = version->get({key, lsn}, _val);
+      if (ret == true)
+        goto do_remove;
+      if (ret == false)
+        return kNotFound;
+    }
+  do_remove:
     mut_->remove({key, lsn}, log_mgr_.get());
   }
   check_mem();
@@ -90,6 +112,7 @@ RetCode Engine::remove(const Key &key) {
 
 RetCode Engine::get(const Key &key, Value &value) {
   auto lock = std::shared_lock<std::shared_mutex>(checking_mem);
+  auto version = versions_->get_latest();
   auto lsn = current_lsn_.fetch_add(1);
   std::string _val;
   auto ret = mut_->get({key, lsn}, _val);
@@ -101,6 +124,15 @@ RetCode Engine::get(const Key &key, Value &value) {
     return kNotFound;
   if (imm_ != nullptr) {
     auto ret = imm_->get({key, lsn}, _val);
+    if (ret == true) {
+      value = _val;
+      return kSucc;
+    }
+    if (ret == false)
+      return kNotFound;
+  }
+  if (version != nullptr) {
+    auto ret = version->get({key, lsn}, _val);
     if (ret == true) {
       value = _val;
       return kSucc;

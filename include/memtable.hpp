@@ -47,6 +47,8 @@ public:
     assert(success);
   }
 
+  OrderedIterater *get_ordered_iterator();
+
 private:
   std::pair<Iter, bool> logged_insert(const InternalKV &kv,
                                       LogManager *log_mgr_) {
@@ -77,9 +79,17 @@ public:
     return *it++;
   }
 
+  MemtableIterator(Memtable::Map::const_iterator it_,
+                   Memtable::Map::const_iterator end_)
+      : it(it_), end(end_) {}
+
 private:
   Memtable::Map::const_iterator it;
   Memtable::Map::const_iterator end;
 };
+
+inline OrderedIterater *Memtable::get_ordered_iterator() {
+  return new MemtableIterator(kv_.begin(), kv_.end());
+}
 
 } // namespace kvs
