@@ -15,7 +15,7 @@ namespace kvs {
 class Version {
   std::optional<std::vector<uint32_t>> read_levels(FILE *fd) {
     int num_tables;
-    if (EOF == scanf("%d", &num_tables))
+    if (EOF == fscanf(fd, "%d", &num_tables))
       return std::nullopt;
     std::vector<uint32_t> table_ids;
     for (int i = 0; i < num_tables; i++) {
@@ -165,6 +165,7 @@ public:
     fprintf(fd, "%u", version_number);
     std::fclose(fd);
     latest = next_version;
+    phantom->latest = latest;
   }
 
   void DoCompaction() {}

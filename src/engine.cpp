@@ -4,11 +4,13 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <ostream>
 #include <thread>
 
 namespace kvs {
 Engine::Engine(const std::string &path, EngineOptions options)
-    : log_mgr_(std::make_unique<LogManager>(path)) {
+    : log_mgr_(std::make_unique<LogManager>(path)),
+      versions_(std::make_unique<Versions>(path)) {
   std::ignore = options;
   mut_ = std::make_unique<Memtable>();
   current_lsn_ = 0;
@@ -103,6 +105,7 @@ RetCode Engine::remove(const Key &key) {
       if (ret == false)
         return kNotFound;
     }
+    return kNotFound;
   do_remove:
     mut_->remove({key, lsn}, log_mgr_.get());
   }
