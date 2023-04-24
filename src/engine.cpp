@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "interfaces.h"
 #include "memtable.hpp"
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -12,8 +13,10 @@ Engine::Engine(const std::string &path, EngineOptions options)
   mut_ = std::make_unique<Memtable>();
   current_lsn_ = 0;
   const auto &[imm_init, mem_init] = log_mgr_->dump_for_recovering();
-  imm_ = std::make_unique<Memtable>(imm_init);
+  imm_ = nullptr;
   mut_ = std::make_unique<Memtable>(mem_init);
+  if (!imm_init.empty())
+    imm_ = std::make_unique<Memtable>(imm_init);
   for (auto &kv : imm_init)
     current_lsn_ = std::max(kv.first.second, current_lsn_.load());
   for (auto &kv : mem_init)
@@ -68,25 +71,42 @@ RetCode Engine::put(const Key &key, const Value &value) {
   return RetCode::kSucc;
 }
 RetCode Engine::remove(const Key &key) {
-  RetCode ret;
   {
     auto lock = std::shared_lock<std::shared_mutex>(checking_mem);
     auto lsn = current_lsn_.fetch_add(1);
-    ret = mut_->remove({key, lsn}, log_mgr_.get());
+    std::string _val;
+    auto ret = mut_->get({key, lsn}, _val);
+    if (ret == false)
+      return kNotFound;
+    if (!ret.has_value()) {
+      if (imm_ == nullptr || imm_->get({key, lsn}, _val) != true)
+        return kNotFound;
+    }
+    mut_->remove({key, lsn}, log_mgr_.get());
   }
   check_mem();
-  return ret;
+  return kSucc;
 }
 
 RetCode Engine::get(const Key &key, Value &value) {
   auto lock = std::shared_lock<std::shared_mutex>(checking_mem);
   auto lsn = current_lsn_.fetch_add(1);
-  auto ret = mut_->get({key, lsn}, value);
-  if (ret == kSucc)
-    return ret;
+  std::string _val;
+  auto ret = mut_->get({key, lsn}, _val);
+  if (ret == true) {
+    value = _val;
+    return kSucc;
+  }
+  if (ret == false)
+    return kNotFound;
   if (imm_ != nullptr) {
-    auto ret = imm_->get({key, lsn}, value);
-    return ret;
+    auto ret = imm_->get({key, lsn}, _val);
+    if (ret == true) {
+      value = _val;
+      return kSucc;
+    }
+    if (ret == false)
+      return kNotFound;
   }
   return RetCode::kNotFound;
 }

@@ -23,14 +23,15 @@ public:
   Memtable(const std::vector<std::pair<TaggedKey, TaggedValue>> &init)
       : kv_(init.begin(), init.end()) {}
 
-  RetCode get(const TaggedKey &key, std::string &value) {
+  std::optional<bool> get(const TaggedKey &key, std::string &value) {
     auto lock = std::shared_lock<std::shared_mutex>(mutex_);
     auto fetched_it = fetch_const_iter(key);
     if (fetched_it.has_value()) {
-      value = fetched_it.value()->second.first;
-      return RetCode::kSucc;
+      auto [val, deleted] = fetched_it.value()->second;
+      value = val;
+      return !deleted;
     }
-    return RetCode::kNotFound;
+    return {};
   }
 
   void insert(const TaggedKey &key, const std::string &value,
@@ -40,14 +41,10 @@ public:
     assert(success);
   }
 
-  RetCode remove(const TaggedKey &key, LogManager *log_mgr_) {
+  void remove(const TaggedKey &key, LogManager *log_mgr_) {
     auto lock = std::unique_lock<std::shared_mutex>(mutex_);
-    auto fetched_it = fetch_const_iter(key);
-    if (!fetched_it.has_value())
-      return kNotFound;
     const auto [it, success] = logged_insert({key, {"_", true}}, log_mgr_);
     assert(success);
-    return kSucc;
   }
 
 private:
@@ -64,8 +61,6 @@ private:
     --it;
     const auto &[tagged_key, tagged_value] = *it;
     if (tagged_key.first != key.first)
-      return {};
-    if (tagged_value.second)
       return {};
     return it;
   }

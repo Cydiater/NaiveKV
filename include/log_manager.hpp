@@ -79,6 +79,7 @@ public:
     assert(!std::filesystem::exists(filename_imm_log));
     std::rename(filename_mem_log.c_str(), filename_imm_log.c_str());
     mem_fd = std::fopen(filename_mem_log.c_str(), "a");
+    log_size = 0;
   }
 
 private:
