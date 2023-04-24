@@ -75,8 +75,10 @@ class MemtableIterator : public OrderedIterater {
 public:
   std::optional<InternalKV> next() override {
     if (it == end)
-      return {};
-    return *it++;
+      return std::nullopt;
+    auto ret = *it;
+    it++;
+    return ret;
   }
 
   MemtableIterator(Memtable::Map::const_iterator it_,

@@ -19,20 +19,21 @@ namespace kvs {
 class SSTableBuilder {
 public:
   SSTableBuilder(std::vector<std::unique_ptr<OrderedIterater>> sources)
-      : sources_{std::move(sources)} {}
+      : sources_{std::move(sources)} {
 
-  std::optional<std::string> build() {
-    uint64_t offset = 0,
-             extra_bytes =
-                 sizeof(uint32_t) /* offset of index's offset array */,
-             last_offset = 0;
-    std::set<std::pair<InternalKV, OrderedIterater *>> ds;
     for (auto &source : sources_) {
       auto first = source->next();
       if (!first.has_value())
         continue;
       ds.insert({first.value(), source.get()});
     }
+  }
+
+  std::optional<std::string> build() {
+    uint64_t offset = 0,
+             extra_bytes =
+                 sizeof(uint64_t) /* offset of index's offset array */,
+             last_offset = 0;
     if (ds.empty())
       return {};
     std::vector<std::tuple<TaggedKey, uint32_t, uint32_t>> block_keys;
@@ -55,7 +56,7 @@ public:
       if (offset - last_offset >= kMaxBlockSize || ds.empty()) {
         assert(first_key.has_value());
         block_keys.push_back({first_key.value(), offset, 0});
-        extra_bytes += sizeof(uint32_t) + kv.first.first.length() +
+        extra_bytes += sizeof(uint32_t) + first_key.value().first.length() +
                        sizeof(uint64_t) /* key record */ +
                        sizeof(uint32_t) /* key offset record */ +
                        sizeof(uint32_t) /* block offset record */;
@@ -66,6 +67,7 @@ public:
         }
       }
     }
+    assert(offset == last_offset);
     for (auto &[k, block_offset, key_offset] : block_keys) {
       key_offset = offset;
       encode_string(buf, offset, k.first);
@@ -86,6 +88,7 @@ public:
 
 private:
   std::vector<std::unique_ptr<OrderedIterater>> sources_;
+  std::set<std::pair<InternalKV, OrderedIterater *>> ds;
   char buf[kMaxTableSize * 2];
 };
 
@@ -120,9 +123,9 @@ public:
     std::fread(&key_len, 4, 1, fd);
     char key_buf[key_len];
     std::fread(key_buf, key_len, 1, fd);
-    uint32_t lsn;
-    std::fread(&lsn, 4, 1, fd);
-    return {std::string(key_buf), lsn};
+    uint64_t lsn;
+    std::fread(&lsn, 8, 1, fd);
+    return {std::string(key_buf, key_len), lsn};
   }
 
   InternalKV get_kv(uint32_t &offset) const {
@@ -133,9 +136,9 @@ public:
     char key_buf[key_len];
     std::fread(key_buf, key_len, 1, fd);
     offset += key_len;
-    uint32_t lsn;
-    std::fread(&lsn, 4, 1, fd);
-    offset += 4;
+    uint64_t lsn;
+    std::fread(&lsn, 8, 1, fd);
+    offset += 8;
     uint32_t val_len;
     std::fread(&val_len, 4, 1, fd);
     offset += 4;
@@ -143,9 +146,10 @@ public:
     std::fread(val_buf, val_len, 1, fd);
     offset += val_len;
     bool deleted;
-    std::fread(&deleted, 4, 1, fd);
+    std::fread(&deleted, 1, 1, fd);
     offset += 1;
-    return {{std::string(key_buf), lsn}, {std::string(val_buf), deleted}};
+    return {{std::string(key_buf, key_len), lsn},
+            {std::string(val_buf, val_len), deleted}};
   }
 
   std::optional<bool> get(uint32_t start, uint32_t end, const TaggedKey &key,
@@ -163,10 +167,10 @@ public:
       return std::nullopt;
     auto target = ans.value();
     if (target.first.first == key.first) {
+      lsn = target.first.second;
       if (target.second.second)
         return false;
       value = target.second.first;
-      lsn = target.first.second;
       return true;
     }
     return std::nullopt;
@@ -174,10 +178,11 @@ public:
 
   std::optional<bool> get(const TaggedKey &key, std::string &value,
                           uint32_t &lsn) const {
-    std::fseek(fd, -4, SEEK_END);
-    uint32_t end = std::ftell(fd);
-    uint32_t start;
-    std::fread(&start, 4, 1, fd);
+    std::fseek(fd, -8, SEEK_END);
+    uint64_t start;
+    std::fread(&start, 8, 1, fd);
+    std::fseek(fd, 0, SEEK_END);
+    uint32_t end = std::ftell(fd) - 8;
     char buf[end - start];
     std::fseek(fd, start, SEEK_SET);
     std::fread(buf, end - start, 1, fd);
@@ -200,6 +205,7 @@ public:
     } else if (get_key(offsets[l * 2 + 1]) <= key) {
       target_block = l;
     } else {
+      auto _l = get_key(offsets[l * 2 + 1]);
       return std::nullopt;
     }
     start = 0;

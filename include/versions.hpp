@@ -72,11 +72,13 @@ public:
 
   void dump(const std::string &filename) {
     auto fd = std::fopen(filename.c_str(), "w");
+    fprintf(fd, "%lu ", level0.size());
     for (auto &s : level0) {
       fprintf(fd, "%u ", s->get_id());
     }
     fprintf(fd, "\n");
     for (auto &lvl : levels) {
+      fprintf(fd, "%lu ", lvl.size());
       for (auto &s : lvl) {
         fprintf(fd, "%u ", s->get_id());
       }
@@ -95,8 +97,9 @@ public:
       auto ret = s->get(key, val, lsn);
       if (ret.has_value()) {
         InternalKV tmp = {{key.first, lsn}, {val, !ret.value()}};
-        if (ans == std::nullopt || tmp > ans.value())
+        if (ans == std::nullopt || tmp > ans.value()) {
           ans = tmp;
+        }
       }
     }
     if (ans == std::nullopt)
