@@ -20,8 +20,7 @@
 namespace kvs {
 
 inline void checked_fread(void *ptr, uint32_t len, FILE *fd) {
-  assert(!std::ferror(fd));
-  auto ret = std::fread(ptr, len, 1, fd);
+  auto ret = std::fread(ptr, 1, len, fd);
   if (ret != len) {
     std::cerr << "ret = " << ret << " len = " << len
               << " msg: " << std::strerror(errno) << std::endl;
@@ -30,8 +29,9 @@ inline void checked_fread(void *ptr, uint32_t len, FILE *fd) {
 }
 
 inline InternalKV get_kv(FILE *fd, uint32_t &offset) {
-  printf("get_kv called\n");
-  assert(std::fseek(fd, offset, SEEK_SET) == 0);
+  auto ret = std::fseek(fd, offset, SEEK_SET);
+  assert(ret == 0);
+  std::ignore = ret;
   uint32_t key_len;
   checked_fread(&key_len, 4, fd);
   offset += 4;
@@ -59,12 +59,10 @@ class SSTableIterator : public OrderedIterater {
 public:
   SSTableIterator(FILE *fd_, uint64_t end_) : fd(fd_), end(end_){};
   std::optional<InternalKV> next() override {
-    printf("sstable next called cur = %u end = %llu\n", cur, end);
     assert(cur <= end);
     if (cur == end)
       return std::nullopt;
     auto kv = get_kv(fd, cur);
-    printf("sstable next called with key %s\n", kv.first.first.c_str());
     return kv;
   }
 
@@ -151,8 +149,11 @@ public:
     assert(extra_bytes == offset - last_offset);
     char tmpfile[] = "/tmp/sstable-XXXXXX";
     auto fd = mkstemp(tmpfile);
-    assert(write(fd, buf, offset) == static_cast<uint32_t>(offset));
-    assert(close(fd) == 0);
+    auto ret = write(fd, buf, offset);
+    assert(ret == static_cast<uint32_t>(offset));
+    ret = close(fd);
+    assert(ret == 0);
+    std::ignore = ret;
     return std::string(tmpfile);
   }
 
@@ -165,30 +166,29 @@ private:
 class SSTable {
 public:
   SSTable(const std::string &filename) : filename_(filename) {
-    printf("init sstable for %s\n", filename.c_str());
     auto fd = get_or_create_fd(std::this_thread::get_id());
     assert(fd != NULL);
-    assert(std::fseek(fd, 0, SEEK_END) == 0);
+    auto ret = std::fseek(fd, 0, SEEK_END);
+    assert(ret == 0);
     uint32_t end = std::ftell(fd) - 8;
-    printf("end = %u\n", end);
-    assert(std::fseek(fd, -8, SEEK_END) == 0);
+    ret = std::fseek(fd, -8, SEEK_END);
+    assert(ret == 0);
     uint64_t start = 0;
     checked_fread(&start, 8, fd);
-    printf("start = %llu end = %u\n", start, end);
     char buf[end - start];
-    assert(std::fseek(fd, start, SEEK_SET) == 0);
+    ret = std::fseek(fd, start, SEEK_SET);
+    assert(ret == 0);
     assert((end - start) % 8 == 0);
     assert(start < end);
-    std::fread(buf, end - start, 1, fd);
+    checked_fread(buf, end - start, fd);
     uint32_t *offsets = reinterpret_cast<uint32_t *>(&buf);
     uint32_t len = (end - start) / 4;
     for (uint32_t i = 0; i < len - 2; i += 2) {
       this->offsets.push_back({offsets[i], offsets[i + 1]});
     }
-    printf("read first_key and last_key\n");
     this->first = get_key(fd, offsets[1]);
     this->last = get_key(fd, offsets[len - 1]);
-    printf("done read first_key and last_key\n");
+    std::ignore = ret;
   }
 
   ~SSTable() {
@@ -212,9 +212,9 @@ public:
   }
 
   TaggedKey get_key(FILE *fd, uint32_t offset) const {
-    printf("get_key called filename = %s offset = %u\n", filename_.c_str(),
-           offset);
-    assert(std::fseek(fd, offset, SEEK_SET) == 0);
+    auto ret = std::fseek(fd, offset, SEEK_SET);
+    assert(ret == 0);
+    std::ignore = ret;
     uint32_t key_len;
     checked_fread(&key_len, 4, fd);
     char key_buf[key_len];
@@ -294,12 +294,7 @@ public:
 
   OrderedIterater *get_ordered_iterator() {
     auto fd = std::fopen(filename_.c_str(), "r");
-    assert(fd != NULL);
-    assert(std::fseek(fd, -8, SEEK_END) == 0);
-    uint64_t end;
-    checked_fread(&end, 8, fd);
-    printf("created sstable iterator for %s\n", filename_.c_str());
-    return new SSTableIterator(fd, end);
+    return new SSTableIterator(fd, offsets[0].second);
   }
 
   const TaggedKey get_first() const { return first; }

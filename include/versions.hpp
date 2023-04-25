@@ -16,15 +16,17 @@ namespace kvs {
 class Versions;
 
 class Version {
-  std::optional<std::vector<uint32_t>> read_levels(FILE *fd) {
+  std::optional<std::vector<uint32_t>> read_levels(FILE *fd) const {
     int num_tables;
     if (EOF == fscanf(fd, "%d", &num_tables))
       return std::nullopt;
     std::vector<uint32_t> table_ids;
     for (int i = 0; i < num_tables; i++) {
       uint32_t id = 0;
-      assert(fscanf(fd, "%u", &id) != EOF);
+      auto ret = fscanf(fd, "%u", &id);
+      assert(ret != EOF);
       table_ids.push_back(id);
+      std::ignore = ret;
     }
     return table_ids;
   }
@@ -59,35 +61,40 @@ public:
     std::fclose(fd);
   }
 
-  std::shared_ptr<Version>
-  create_next_version(const std::string &base_dir, uint32_t &table_number,
-                      const std::vector<std::vector<std::string>> &new_tables,
-                      const std::vector<std::vector<std::string>> &rm_tables) {
+  std::shared_ptr<Version> create_next_version(
+      const std::string &base_dir, uint32_t &table_number,
+      const std::vector<std::vector<std::string>> &new_tables,
+      const std::vector<std::vector<std::string>> &rm_tables) const {
     std::ignore = rm_tables;
     auto next_version = std::make_shared<Version>(*this);
     for (auto &filename : new_tables[0]) {
       next_version->max_id = table_number;
       std::string target_name =
           base_dir + "/sst." + std::to_string(table_number++);
-      assert(std::rename(filename.c_str(), target_name.c_str()) == 0);
+      auto ret = std::rename(filename.c_str(), target_name.c_str());
+      assert(ret == 0);
+      std::ignore = ret;
       next_version->level0.push_back(std::make_shared<SSTable>(target_name));
     }
-    printf("new version with %lu level-0 tables\n",
-           next_version->level0.size());
     return next_version;
   }
 
   std::shared_ptr<Version>
   create_next_version_by_compacting_level0(const std::string &base_dir,
                                            uint32_t &table_number) {
-    std::vector<uint32_t> source_indices;
+    std::set<uint32_t> source_indices;
     auto left = level0[0]->get_first(), right = level0[0]->get_last();
-    for (uint32_t i = 0; i < level0.size(); i++) {
-      if (level0[i]->get_last() < left || level0[i]->get_first() > right)
-        continue;
-      source_indices.push_back(i);
-      left = std::min(left, level0[i]->get_first());
-      right = std::max(right, level0[i]->get_last());
+    while (true) {
+      auto before = source_indices.size();
+      for (uint32_t i = 0; i < level0.size(); i++) {
+        if (level0[i]->get_last() < left || level0[i]->get_first() > right)
+          continue;
+        source_indices.insert(i);
+        left = std::min(left, level0[i]->get_first());
+        right = std::max(right, level0[i]->get_last());
+      }
+      if (before == source_indices.size())
+        break;
     }
     if (levels.size() == 0) {
       levels.push_back({});
@@ -115,18 +122,14 @@ public:
       }
     }
     auto builder = SSTableBuilder(std::move(sources));
-    printf("got builder\n");
     std::vector<std::string> tmp_sstables;
     while (true) {
       auto build = builder.build();
-      printf("built one\n");
       if (build == std::nullopt)
         break;
       tmp_sstables.push_back(build.value());
     }
-    printf("tables built of total %lu\n", tmp_sstables.size());
     auto next_version = std::make_shared<Version>(*this);
-    std::sort(source_indices.begin(), source_indices.end());
     for (auto it = source_indices.rbegin(); it != source_indices.rend(); it++) {
       auto i = *it;
       next_version->level0.erase(next_version->level0.begin() + i);
@@ -157,7 +160,7 @@ public:
     return nullptr;
   }
 
-  void dump(const std::string &filename) {
+  void dump(const std::string &filename) const {
     auto fd = std::fopen(filename.c_str(), "w");
     fprintf(fd, "%lu ", level0.size());
     for (auto &s : level0) {
@@ -177,7 +180,7 @@ public:
   uint32_t get_max_id() const { return max_id; }
 
   std::optional<bool> get(const std::vector<std::shared_ptr<SSTable>> &lvl,
-                          const TaggedKey &key, std::string &value) {
+                          const TaggedKey &key, std::string &value) const {
     std::optional<InternalKV> ans = std::nullopt;
     for (auto &s : lvl) {
       std::string val;
@@ -199,10 +202,11 @@ public:
     return true;
   }
 
-  std::optional<bool> get(const TaggedKey &key, std::string &value) {
+  std::optional<bool> get(const TaggedKey &key, std::string &value) const {
     auto ret = get(level0, key, value);
-    if (ret != std::nullopt)
+    if (ret != std::nullopt) {
       return ret;
+    }
     for (auto &lvl : levels) {
       auto ret = get(lvl, key, value);
       if (ret != std::nullopt)
@@ -278,16 +282,13 @@ public:
   }
 
   void schedule_compaction() {
-    printf("compaction scheduled\n");
     auto lock = std::lock_guard(mutex);
     if (latest == nullptr)
       return;
     std::shared_ptr<Version> next = nullptr;
     if (latest->level0.size() > 4) {
-      printf("do l0 compaction\n");
       next = latest->create_next_version_by_compacting_level0(base_dir,
                                                               table_number);
-      printf("next version created");
     } else {
       uint32_t bs = 10, i = 0;
       for (auto &lvl : latest->levels) {
@@ -310,7 +311,11 @@ public:
     // from being deleted
   }
 
-  std::shared_ptr<Version> get_latest() { return latest; }
+  std::shared_ptr<Version> get_latest() {
+    auto lock = std::lock_guard<std::mutex>(mutex);
+    auto ret = latest;
+    return ret;
+  }
 
 private:
   std::shared_ptr<Version> latest;
