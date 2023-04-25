@@ -19,6 +19,49 @@
 
 namespace kvs {
 
+inline InternalKV get_kv(FILE *fd, uint32_t &offset) {
+  std::fseek(fd, offset, SEEK_SET);
+  uint32_t key_len;
+  std::fread(&key_len, 4, 1, fd);
+  offset += 4;
+  char key_buf[key_len];
+  std::fread(key_buf, key_len, 1, fd);
+  offset += key_len;
+  uint64_t lsn;
+  std::fread(&lsn, 8, 1, fd);
+  offset += 8;
+  uint32_t val_len;
+  std::fread(&val_len, 4, 1, fd);
+  offset += 4;
+  char val_buf[val_len];
+  std::fread(val_buf, val_len, 1, fd);
+  offset += val_len;
+  bool deleted;
+  std::fread(&deleted, 1, 1, fd);
+  offset += 1;
+  return {{std::string(key_buf, key_len), lsn},
+          {std::string(val_buf, val_len), deleted}};
+}
+
+class SSTableIterator : public OrderedIterater {
+
+public:
+  SSTableIterator(FILE *fd_, uint64_t end_) : fd(fd_), end(end_){};
+  std::optional<InternalKV> next() override {
+    assert(cur <= end);
+    if (cur == end)
+      return std::nullopt;
+    return get_kv(fd, cur);
+  }
+
+  ~SSTableIterator() { std::fclose(fd); }
+
+private:
+  FILE *fd;
+  uint32_t cur{0};
+  uint64_t end;
+};
+
 class SSTableBuilder {
 public:
   SSTableBuilder(std::vector<std::unique_ptr<OrderedIterater>> sources)
@@ -160,30 +203,6 @@ public:
     return {std::string(key_buf, key_len), lsn};
   }
 
-  InternalKV get_kv(FILE *fd, uint32_t &offset) const {
-    std::fseek(fd, offset, SEEK_SET);
-    uint32_t key_len;
-    std::fread(&key_len, 4, 1, fd);
-    offset += 4;
-    char key_buf[key_len];
-    std::fread(key_buf, key_len, 1, fd);
-    offset += key_len;
-    uint64_t lsn;
-    std::fread(&lsn, 8, 1, fd);
-    offset += 8;
-    uint32_t val_len;
-    std::fread(&val_len, 4, 1, fd);
-    offset += 4;
-    char val_buf[val_len];
-    std::fread(val_buf, val_len, 1, fd);
-    offset += val_len;
-    bool deleted;
-    std::fread(&deleted, 1, 1, fd);
-    offset += 1;
-    return {{std::string(key_buf, key_len), lsn},
-            {std::string(val_buf, val_len), deleted}};
-  }
-
   std::optional<bool> get(FILE *fd, uint32_t start, uint32_t end,
                           const TaggedKey &key, std::string &value,
                           uint32_t &lsn) const {
@@ -252,13 +271,23 @@ public:
     return ret;
   }
 
+  OrderedIterater *get_ordered_iterator() {
+    auto fd = std::fopen(filename_.c_str(), "r");
+    assert(fd != NULL);
+    std::fseek(fd, -8, SEEK_END);
+    uint64_t end;
+    std::fread(&end, 8, 1, fd);
+    return new SSTableIterator(fd, end);
+  }
+
+  const TaggedKey get_first() const { return first; }
+  const TaggedKey get_last() const { return last; }
+
 private:
+  TaggedKey first, last;
   std::string filename_;
   std::map<std::thread::id, FILE *> fds;
   std::vector<std::pair<uint32_t, uint32_t>> offsets;
-  TaggedKey first, last;
 };
-
-class SSTableIterator : public OrderedIterater {};
 
 } // namespace kvs

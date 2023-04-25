@@ -5,6 +5,7 @@
 #include "ordered_iteratable.hpp"
 #include "sstable.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -40,6 +41,7 @@ public:
         max_id = std::max(id, max_id);
         auto table_name = base_dir + "/sst." + std::to_string(id);
         level0.emplace_back(std::make_shared<SSTable>(table_name));
+        last_compaction_key.push_back(std::nullopt);
       }
       while (true) {
         ids = read_levels(fd);
@@ -52,13 +54,14 @@ public:
           level.emplace_back(std::make_shared<SSTable>(table_name));
         }
         levels.emplace_back(level);
+        last_compaction_key.push_back(std::nullopt);
       }
     }
     std::fclose(fd);
   }
 
   std::shared_ptr<Version>
-  create_next_version(const std::string &base_dir, uint32_t table_number,
+  create_next_version(const std::string &base_dir, uint32_t &table_number,
                       const std::vector<std::vector<std::string>> &new_tables,
                       const std::vector<std::vector<std::string>> &rm_tables) {
     std::ignore = rm_tables;
@@ -73,12 +76,79 @@ public:
     return next_version;
   }
 
-  std::pair<std::shared_ptr<Version>, uint32_t>
-  create_next_version_by_compacting_level0(const std::string &base_dir) {}
+  std::shared_ptr<Version>
+  create_next_version_by_compacting_level0(const std::string &base_dir,
+                                           uint32_t &table_number) {
+    std::vector<uint32_t> source_indices;
+    auto left = level0[0]->get_first(), right = level0[0]->get_last();
+    for (uint32_t i = 0; i < level0.size(); i++) {
+      if (level0[i]->get_last() < left || level0[i]->get_first() > right)
+        continue;
+      source_indices.push_back(i);
+      left = std::min(left, level0[i]->get_first());
+      right = std::max(right, level0[i]->get_last());
+    }
+    std::pair<int, int> next_level_merge_range(0, -1);
+    for (int i = 0; i < static_cast<int>(levels[0].size()); i++) {
+      if (levels[0][i]->get_last() < left || levels[0][i]->get_first() > right)
+        continue;
+      if (i > next_level_merge_range.second)
+        next_level_merge_range.second = i;
+      else {
+        next_level_merge_range.first = i;
+        next_level_merge_range.second = i;
+      }
+    }
+    std::vector<std::unique_ptr<OrderedIterater>> sources = {};
+    for (auto i : source_indices)
+      sources.push_back(
+          std::unique_ptr<OrderedIterater>(level0[i]->get_ordered_iterator()));
+    if (next_level_merge_range.first <= next_level_merge_range.second) {
+      for (auto i = next_level_merge_range.first;
+           i <= next_level_merge_range.second; i++) {
+        sources.push_back(std::unique_ptr<OrderedIterater>(
+            levels[0][i]->get_ordered_iterator()));
+      }
+    }
+    auto builder = SSTableBuilder(std::move(sources));
+    std::vector<std::string> tmp_sstables;
+    while (true) {
+      auto build = builder.build();
+      if (build == std::nullopt)
+        break;
+      tmp_sstables.push_back(build.value());
+    }
+    auto next_version = std::make_shared<Version>(*this);
+    std::sort(source_indices.begin(), source_indices.end());
+    for (auto it = source_indices.rbegin(); it != source_indices.rend(); it++) {
+      auto i = *it;
+      next_version->level0.erase(next_version->level0.begin() + i);
+    }
+    if (next_level_merge_range.first <= next_level_merge_range.second) {
+      auto base = next_version->levels[0].begin();
+      next_version->levels[0].erase(base + next_level_merge_range.first,
+                                    base + next_level_merge_range.second + 1);
+    }
+    for (auto it = tmp_sstables.rbegin(); it != tmp_sstables.rend(); it++) {
+      auto &filename = *it;
+      auto target_filename =
+          base_dir + "/sst." + std::to_string(table_number++);
+      std::filesystem::rename(filename, target_filename);
+      auto base = next_version->levels[0].begin();
+      next_version->levels[0].insert(
+          base + next_level_merge_range.first,
+          std::make_shared<SSTable>(target_filename));
+    }
+    return next_version;
+  }
 
-  std::pair<std::shared_ptr<Version>, uint32_t>
+  std::shared_ptr<Version>
   create_next_version_by_compacting_level_i(const std::string &base_dir,
-                                            uint32_t lvl_idx) {}
+                                            uint32_t lvl_idx) {
+    std::ignore = base_dir;
+    std::ignore = lvl_idx;
+    return nullptr;
+  }
 
   void dump(const std::string &filename) {
     auto fd = std::fopen(filename.c_str(), "w");
@@ -99,9 +169,10 @@ public:
 
   uint32_t get_max_id() const { return max_id; }
 
-  std::optional<bool> get(const TaggedKey &key, std::string &value) {
+  std::optional<bool> get(const std::vector<std::shared_ptr<SSTable>> &lvl,
+                          const TaggedKey &key, std::string &value) {
     std::optional<InternalKV> ans = std::nullopt;
-    for (auto &s : level0) {
+    for (auto &s : lvl) {
       std::string val;
       uint32_t lsn;
       auto ret = s->get(key, val, lsn);
@@ -121,11 +192,24 @@ public:
     return true;
   }
 
+  std::optional<bool> get(const TaggedKey &key, std::string &value) {
+    auto ret = get(level0, key, value);
+    if (ret != std::nullopt)
+      return ret;
+    for (auto &lvl : levels) {
+      auto ret = get(lvl, key, value);
+      if (ret != std::nullopt)
+        return ret;
+    }
+    return std::nullopt;
+  }
+
   friend Versions;
 
 private:
   std::vector<std::shared_ptr<SSTable>> level0;
   std::vector<std::vector<std::shared_ptr<SSTable>>> levels;
+  std::vector<std::optional<TaggedKey>> last_compaction_key;
   uint32_t max_id;
 };
 
@@ -183,7 +267,6 @@ public:
     auto lock = std::lock_guard<std::mutex>(mutex);
     auto next_version =
         latest->create_next_version(base_dir, table_number, {new_tables}, {});
-    table_number += new_tables.size();
     add_version(next_version);
   }
 
@@ -193,16 +276,14 @@ public:
       return;
     std::shared_ptr<Version> next = nullptr;
     if (latest->level0.size() > 4) {
-      auto [next, new_tables] =
-          latest->create_next_version_by_compacting_level0(base_dir);
-      table_number += new_tables;
+      auto next = latest->create_next_version_by_compacting_level0(
+          base_dir, table_number);
     } else {
       uint32_t bs = 10, i = 0;
       for (auto &lvl : latest->levels) {
         if (lvl.size() > bs) {
-          auto [next, new_tables] =
+          auto next =
               latest->create_next_version_by_compacting_level_i(base_dir, i);
-          table_number += new_tables;
           break;
         }
         bs *= 10;

@@ -117,7 +117,7 @@ RetCode Engine::remove(const Key &key) {
 RetCode Engine::get(const Key &key, Value &value) {
   auto lock = std::shared_lock<std::shared_mutex>(checking_mem);
   auto version = versions_->get_latest();
-  auto lsn = current_lsn_.fetch_add(1);
+  auto lsn = current_lsn_.fetch_add(0);
   std::string _val;
   auto ret = mut_->get({key, lsn}, _val);
   if (ret == true) {
