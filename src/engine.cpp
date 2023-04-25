@@ -34,13 +34,14 @@ void Engine::background() {
     bg_scheduled = false;
     if (killed)
       break;
-    checking_mem.lock();
+    auto lock = std::unique_lock<std::shared_mutex>(checking_mem);
     if (imm_ != nullptr) {
-      versions_->StoreImmtable(imm_.get());
+      versions_->store_immtable(imm_.get());
       log_mgr_->rm_imm_log();
       imm_ = nullptr;
+      continue;
     }
-    checking_mem.unlock();
+    versions_->schedule_compaction();
   }
 }
 

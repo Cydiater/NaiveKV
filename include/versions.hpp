@@ -13,6 +13,8 @@
 
 namespace kvs {
 
+class Versions;
+
 class Version {
   std::optional<std::vector<uint32_t>> read_levels(FILE *fd) {
     int num_tables;
@@ -71,6 +73,13 @@ public:
     return next_version;
   }
 
+  std::pair<std::shared_ptr<Version>, uint32_t>
+  create_next_version_by_compacting_level0(const std::string &base_dir) {}
+
+  std::pair<std::shared_ptr<Version>, uint32_t>
+  create_next_version_by_compacting_level_i(const std::string &base_dir,
+                                            uint32_t lvl_idx) {}
+
   void dump(const std::string &filename) {
     auto fd = std::fopen(filename.c_str(), "w");
     fprintf(fd, "%lu ", level0.size());
@@ -112,6 +121,8 @@ public:
     return true;
   }
 
+  friend Versions;
+
 private:
   std::vector<std::shared_ptr<SSTable>> level0;
   std::vector<std::vector<std::shared_ptr<SSTable>>> levels;
@@ -146,7 +157,18 @@ public:
     phantom = new PhantomStorage{latest};
   }
 
-  void StoreImmtable(Memtable *imm) {
+  void add_version(std::shared_ptr<Version> next_version) {
+    auto version_filename =
+        base_dir + "/version." + std::to_string(++version_number);
+    next_version->dump(version_filename);
+    auto fd = std::fopen((base_dir + "/current").c_str(), "w");
+    fprintf(fd, "%u", version_number);
+    std::fclose(fd);
+    latest = next_version;
+    phantom->latest = latest;
+  }
+
+  void store_immtable(Memtable *imm) {
     auto it = std::unique_ptr<OrderedIterater>(imm->get_ordered_iterator());
     std::vector<std::unique_ptr<OrderedIterater>> sources;
     sources.push_back(std::move(it));
@@ -162,17 +184,35 @@ public:
     auto next_version =
         latest->create_next_version(base_dir, table_number, {new_tables}, {});
     table_number += new_tables.size();
-    auto version_filename =
-        base_dir + "/version." + std::to_string(++version_number);
-    next_version->dump(version_filename);
-    auto fd = std::fopen((base_dir + "/current").c_str(), "w");
-    fprintf(fd, "%u", version_number);
-    std::fclose(fd);
-    latest = next_version;
-    phantom->latest = latest;
+    add_version(next_version);
   }
 
-  void DoCompaction() {}
+  void schedule_compaction() {
+    auto lock = std::lock_guard(mutex);
+    if (latest == nullptr)
+      return;
+    std::shared_ptr<Version> next = nullptr;
+    if (latest->level0.size() > 4) {
+      auto [next, new_tables] =
+          latest->create_next_version_by_compacting_level0(base_dir);
+      table_number += new_tables;
+    } else {
+      uint32_t bs = 10, i = 0;
+      for (auto &lvl : latest->levels) {
+        if (lvl.size() > bs) {
+          auto [next, new_tables] =
+              latest->create_next_version_by_compacting_level_i(base_dir, i);
+          table_number += new_tables;
+          break;
+        }
+        bs *= 10;
+        i += 1;
+      }
+    }
+    if (next == nullptr)
+      return;
+    add_version(next);
+  }
 
   ~Versions() {
     // PhantomStorage is leaked here intentionally to prevent latest version

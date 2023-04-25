@@ -42,6 +42,7 @@ public:
       return {};
     std::vector<std::tuple<TaggedKey, uint32_t, uint32_t>> block_keys;
     std::optional<TaggedKey> first_key = std::nullopt;
+    std::optional<TaggedKey> last_key = std::nullopt;
     while (!ds.empty()) {
       auto it = ds.begin();
       auto [kv, source] = *it;
@@ -53,6 +54,7 @@ public:
       if (first_key == std::nullopt) {
         first_key = kv.first;
       }
+      last_key = kv.first;
       encode_string(buf, offset, kv.first.first);
       encode(buf, offset, kv.first.second);
       encode_string(buf, offset, kv.second.first);
@@ -66,7 +68,13 @@ public:
                        sizeof(uint32_t) /* block offset record */;
         last_offset = offset;
         first_key = std::nullopt;
-        if (offset >= kMaxTableSize) {
+        if (offset >= kMaxTableSize || ds.empty()) {
+          block_keys.push_back({last_key.value(), offset, 0});
+          extra_bytes += sizeof(uint32_t) + last_key.value().first.length() +
+                         sizeof(uint64_t) /* key record */ +
+                         sizeof(uint32_t) /* key offset record */ +
+                         sizeof(uint32_t) /* block offset record */;
+          last_offset = offset;
           break;
         }
       }
@@ -99,7 +107,27 @@ private:
 
 class SSTable {
 public:
-  SSTable(const std::string &filename) : filename_(filename) {}
+  SSTable(const std::string &filename) : filename_(filename) {
+    auto fd = get_or_create_fd(std::this_thread::get_id());
+    assert(fd != NULL);
+    std::fseek(fd, -8, SEEK_END);
+    uint64_t start;
+    std::fread(&start, 8, 1, fd);
+    std::fseek(fd, 0, SEEK_END);
+    uint32_t end = std::ftell(fd) - 8;
+    char buf[end - start];
+    std::fseek(fd, start, SEEK_SET);
+    assert((end - start) % 8 == 0);
+    assert(start < end);
+    std::fread(buf, end - start, 1, fd);
+    uint32_t *offsets = reinterpret_cast<uint32_t *>(&buf);
+    uint32_t len = (end - start) / 4;
+    for (uint32_t i = 0; i < len - 2; i += 2) {
+      this->offsets.push_back({offsets[i], offsets[i + 1]});
+    }
+    this->first = get_key(fd, offsets[1]);
+    this->last = get_key(fd, offsets[len - 1]);
+  }
 
   ~SSTable() {
     for (auto kv : fds)
@@ -197,23 +225,10 @@ public:
   std::optional<bool> get(const TaggedKey &key, std::string &value,
                           uint32_t &lsn) {
     auto fd = get_or_create_fd(std::this_thread::get_id());
-    assert(fd != NULL);
-    std::fseek(fd, -8, SEEK_END);
-    uint64_t start;
-    std::fread(&start, 8, 1, fd);
-    std::fseek(fd, 0, SEEK_END);
-    uint32_t end = std::ftell(fd) - 8;
-    char buf[end - start];
-    std::fseek(fd, start, SEEK_SET);
-    assert((end - start) % 8 == 0);
-    assert(start < end);
-    std::fread(buf, end - start, 1, fd);
-    uint32_t *offsets = reinterpret_cast<uint32_t *>(&buf);
-    uint32_t len = (end - start) / 4;
-    int l = 0, r = (len / 2) - 1, m;
+    int l = 0, r = offsets.size() - 1, m;
     while (l + 1 < r) {
       m = (l + r) / 2;
-      auto fetched_key = get_key(fd, offsets[m * 2 + 1]);
+      auto fetched_key = get_key(fd, offsets[m].second);
       if (fetched_key <= key) {
         l = m;
       } else {
@@ -221,19 +236,18 @@ public:
       }
     }
     uint32_t target_block = 0;
-    if (get_key(fd, offsets[r * 2 + 1]) <= key) {
+    if (get_key(fd, offsets[r].second) <= key) {
       target_block = r;
-    } else if (get_key(fd, offsets[l * 2 + 1]) <= key) {
+    } else if (get_key(fd, offsets[l].second) <= key) {
       target_block = l;
     } else {
-      auto _l = get_key(fd, offsets[l * 2 + 1]);
       return std::nullopt;
     }
-    start = 0;
+    uint32_t start = 0;
     if (target_block > 0) {
-      start = offsets[(target_block - 1) * 2];
+      start = offsets[target_block - 1].first;
     }
-    end = offsets[target_block * 2];
+    uint32_t end = offsets[target_block].first;
     auto ret = get(fd, start, end, key, value, lsn);
     return ret;
   }
@@ -241,6 +255,8 @@ public:
 private:
   std::string filename_;
   std::map<std::thread::id, FILE *> fds;
+  std::vector<std::pair<uint32_t, uint32_t>> offsets;
+  TaggedKey first, last;
 };
 
 class SSTableIterator : public OrderedIterater {};
