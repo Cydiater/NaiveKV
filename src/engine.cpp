@@ -123,16 +123,18 @@ RetCode Engine::get(const Key &key, Value &value) {
     value = _val;
     return kSucc;
   }
-  if (ret == false)
+  if (ret == false) {
     return kNotFound;
+  }
   if (imm_ != nullptr) {
     auto ret = imm_->get({key, lsn}, _val);
     if (ret == true) {
       value = _val;
       return kSucc;
     }
-    if (ret == false)
+    if (ret == false) {
       return kNotFound;
+    }
   }
   if (version != nullptr) {
     auto ret = version->get({key, lsn}, _val);
@@ -140,13 +142,15 @@ RetCode Engine::get(const Key &key, Value &value) {
       value = _val;
       return kSucc;
     }
-    if (ret == false)
+    if (ret == false) {
       return kNotFound;
+    }
   }
   return RetCode::kNotFound;
 }
 
 RetCode Engine::sync() {
+  auto lock = std::unique_lock<std::shared_mutex>(checking_mem);
   log_mgr_->flush();
   return RetCode::kSucc;
 }

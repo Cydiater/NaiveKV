@@ -26,6 +26,7 @@ public:
   }
 
   void rm_imm_log() {
+    auto lock = std::lock_guard<std::mutex>(mutex_);
     assert(mode == Mode::Logging);
     std::filesystem::remove(filename_imm_log);
   }
@@ -79,6 +80,7 @@ public:
   }
 
   void flush_and_reset() {
+    auto lock = std::lock_guard<std::mutex>(mutex_);
     flush();
     std::fclose(mem_fd);
     assert(!std::filesystem::exists(filename_imm_log));

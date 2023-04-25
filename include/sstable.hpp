@@ -4,9 +4,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -83,6 +86,7 @@ public:
     char tmpfile[] = "/tmp/sstable-XXXXXX";
     auto fd = mkstemp(tmpfile);
     write(fd, buf, offset);
+    close(fd);
     return std::string(tmpfile);
   }
 
@@ -94,12 +98,11 @@ private:
 
 class SSTable {
 public:
-  SSTable(const std::string &filename) : filename_(filename) {
-    fd = std::fopen(filename_.c_str(), "r");
-  }
+  SSTable(const std::string &filename) : filename_(filename) {}
 
   ~SSTable() {
-    std::fclose(fd);
+    for (auto kv : fds)
+      std::fclose(kv.second);
     std::filesystem::remove(filename_);
   }
 
@@ -117,7 +120,7 @@ public:
     return id;
   }
 
-  TaggedKey get_key(uint32_t offset) const {
+  TaggedKey get_key(FILE *fd, uint32_t offset) const {
     std::fseek(fd, offset, SEEK_SET);
     uint32_t key_len;
     std::fread(&key_len, 4, 1, fd);
@@ -128,7 +131,7 @@ public:
     return {std::string(key_buf, key_len), lsn};
   }
 
-  InternalKV get_kv(uint32_t &offset) const {
+  InternalKV get_kv(FILE *fd, uint32_t &offset) const {
     std::fseek(fd, offset, SEEK_SET);
     uint32_t key_len;
     std::fread(&key_len, 4, 1, fd);
@@ -152,11 +155,12 @@ public:
             {std::string(val_buf, val_len), deleted}};
   }
 
-  std::optional<bool> get(uint32_t start, uint32_t end, const TaggedKey &key,
-                          std::string &value, uint32_t &lsn) const {
+  std::optional<bool> get(FILE *fd, uint32_t start, uint32_t end,
+                          const TaggedKey &key, std::string &value,
+                          uint32_t &lsn) const {
     std::optional<InternalKV> ans = std::nullopt;
     while (start < end) {
-      auto kv = get_kv(start);
+      auto kv = get_kv(fd, start);
       if (kv.first <= key) {
         ans = kv;
       } else {
@@ -176,8 +180,23 @@ public:
     return std::nullopt;
   }
 
+  FILE *get_or_create_fd(const std::thread::id i) {
+    if (fds.find(i) == fds.end()) {
+      auto fd = std::fopen(filename_.c_str(), "r");
+      if (fd == NULL || std::ferror(fd)) {
+        std::cerr << "Failed to open sstable: " << std::strerror(errno)
+                  << std::endl;
+        assert(false);
+      }
+      fds[i] = fd;
+    }
+    return fds[i];
+  }
+
   std::optional<bool> get(const TaggedKey &key, std::string &value,
-                          uint32_t &lsn) const {
+                          uint32_t &lsn) {
+    auto fd = get_or_create_fd(std::this_thread::get_id());
+    assert(fd != NULL);
     std::fseek(fd, -8, SEEK_END);
     uint64_t start;
     std::fread(&start, 8, 1, fd);
@@ -185,14 +204,15 @@ public:
     uint32_t end = std::ftell(fd) - 8;
     char buf[end - start];
     std::fseek(fd, start, SEEK_SET);
+    assert((end - start) % 8 == 0);
+    assert(start < end);
     std::fread(buf, end - start, 1, fd);
     uint32_t *offsets = reinterpret_cast<uint32_t *>(&buf);
-    assert((end - start) % 8 == 0);
     uint32_t len = (end - start) / 4;
     int l = 0, r = (len / 2) - 1, m;
     while (l + 1 < r) {
       m = (l + r) / 2;
-      auto fetched_key = get_key(offsets[m * 2 + 1]);
+      auto fetched_key = get_key(fd, offsets[m * 2 + 1]);
       if (fetched_key <= key) {
         l = m;
       } else {
@@ -200,12 +220,12 @@ public:
       }
     }
     uint32_t target_block = 0;
-    if (get_key(offsets[r * 2 + 1]) <= key) {
+    if (get_key(fd, offsets[r * 2 + 1]) <= key) {
       target_block = r;
-    } else if (get_key(offsets[l * 2 + 1]) <= key) {
+    } else if (get_key(fd, offsets[l * 2 + 1]) <= key) {
       target_block = l;
     } else {
-      auto _l = get_key(offsets[l * 2 + 1]);
+      auto _l = get_key(fd, offsets[l * 2 + 1]);
       return std::nullopt;
     }
     start = 0;
@@ -213,12 +233,13 @@ public:
       start = offsets[(target_block - 1) * 2];
     }
     end = offsets[target_block * 2];
-    return get(start, end, key, value, lsn);
+    auto ret = get(fd, start, end, key, value, lsn);
+    return ret;
   }
 
 private:
   std::string filename_;
-  FILE *fd;
+  std::map<std::thread::id, FILE *> fds;
 };
 
 class SSTableIterator : public OrderedIterater {};
