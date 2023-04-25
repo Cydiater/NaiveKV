@@ -37,6 +37,7 @@ public:
              extra_bytes =
                  sizeof(uint64_t) /* offset of index's offset array */,
              last_offset = 0;
+    std::ignore = extra_bytes;
     if (ds.empty())
       return {};
     std::vector<std::tuple<TaggedKey, uint32_t, uint32_t>> block_keys;

@@ -20,7 +20,7 @@ class Version {
       return std::nullopt;
     std::vector<uint32_t> table_ids;
     for (int i = 0; i < num_tables; i++) {
-      uint32_t id;
+      uint32_t id = 0;
       assert(fscanf(fd, "%u", &id) != EOF);
       table_ids.push_back(id);
     }

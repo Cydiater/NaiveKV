@@ -39,12 +39,16 @@ public:
     auto lock = std::unique_lock<std::shared_mutex>(mutex_);
     const auto [it, success] = logged_insert({key, {value, false}}, log_mgr_);
     assert(success);
+    std::ignore = it;
+    std::ignore = success;
   }
 
   void remove(const TaggedKey &key, LogManager *log_mgr_) {
     auto lock = std::unique_lock<std::shared_mutex>(mutex_);
     const auto [it, success] = logged_insert({key, {"_", true}}, log_mgr_);
     assert(success);
+    std::ignore = it;
+    std::ignore = success;
   }
 
   OrderedIterater *get_ordered_iterator();
