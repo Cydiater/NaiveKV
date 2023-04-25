@@ -8,7 +8,7 @@
 using namespace kvs;
 using namespace bench;
 
-DEFINE_uint64(test_nr, 100000, "The number of tests");
+DEFINE_uint64(test_nr, 1000000, "The number of tests");
 DEFINE_string(kvdir, kDefaultTestDir, "The KV Store data directory");
 
 int main(int argc, char *argv[])

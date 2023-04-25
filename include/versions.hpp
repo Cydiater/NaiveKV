@@ -6,7 +6,6 @@
 #include "sstable.hpp"
 
 #include <algorithm>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -70,9 +69,11 @@ public:
       next_version->max_id = table_number;
       std::string target_name =
           base_dir + "/sst." + std::to_string(table_number++);
-      std::filesystem::rename(filename, target_name);
+      assert(std::rename(filename.c_str(), target_name.c_str()) == 0);
       next_version->level0.push_back(std::make_shared<SSTable>(target_name));
     }
+    printf("new version with %lu level-0 tables\n",
+           next_version->level0.size());
     return next_version;
   }
 
@@ -87,6 +88,9 @@ public:
       source_indices.push_back(i);
       left = std::min(left, level0[i]->get_first());
       right = std::max(right, level0[i]->get_last());
+    }
+    if (levels.size() == 0) {
+      levels.push_back({});
     }
     std::pair<int, int> next_level_merge_range(0, -1);
     for (int i = 0; i < static_cast<int>(levels[0].size()); i++) {
@@ -111,13 +115,16 @@ public:
       }
     }
     auto builder = SSTableBuilder(std::move(sources));
+    printf("got builder\n");
     std::vector<std::string> tmp_sstables;
     while (true) {
       auto build = builder.build();
+      printf("built one\n");
       if (build == std::nullopt)
         break;
       tmp_sstables.push_back(build.value());
     }
+    printf("tables built of total %lu\n", tmp_sstables.size());
     auto next_version = std::make_shared<Version>(*this);
     std::sort(source_indices.begin(), source_indices.end());
     for (auto it = source_indices.rbegin(); it != source_indices.rend(); it++) {
@@ -271,27 +278,30 @@ public:
   }
 
   void schedule_compaction() {
+    printf("compaction scheduled\n");
     auto lock = std::lock_guard(mutex);
     if (latest == nullptr)
       return;
     std::shared_ptr<Version> next = nullptr;
     if (latest->level0.size() > 4) {
-      auto next = latest->create_next_version_by_compacting_level0(
-          base_dir, table_number);
+      printf("do l0 compaction\n");
+      next = latest->create_next_version_by_compacting_level0(base_dir,
+                                                              table_number);
+      printf("next version created");
     } else {
       uint32_t bs = 10, i = 0;
       for (auto &lvl : latest->levels) {
         if (lvl.size() > bs) {
-          auto next =
-              latest->create_next_version_by_compacting_level_i(base_dir, i);
+          next = latest->create_next_version_by_compacting_level_i(base_dir, i);
           break;
         }
         bs *= 10;
         i += 1;
       }
     }
-    if (next == nullptr)
+    if (next == nullptr) {
       return;
+    }
     add_version(next);
   }
 

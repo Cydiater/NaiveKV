@@ -31,17 +31,18 @@ Engine::Engine(const std::string &path, EngineOptions options)
 void Engine::background() {
   while (true) {
     do_compaction.acquire();
-    bg_scheduled = false;
     if (killed)
       break;
-    auto lock = std::unique_lock<std::shared_mutex>(checking_mem);
-    if (imm_ != nullptr) {
-      versions_->store_immtable(imm_.get());
-      log_mgr_->rm_imm_log();
-      imm_ = nullptr;
-      continue;
+    {
+      auto lock = std::unique_lock<std::shared_mutex>(checking_mem);
+      if (imm_ != nullptr) {
+        versions_->store_immtable(imm_.get());
+        log_mgr_->rm_imm_log();
+        imm_ = nullptr;
+      }
     }
     versions_->schedule_compaction();
+    bg_scheduled = false;
   }
 }
 
@@ -117,7 +118,7 @@ RetCode Engine::remove(const Key &key) {
 RetCode Engine::get(const Key &key, Value &value) {
   auto lock = std::shared_lock<std::shared_mutex>(checking_mem);
   auto version = versions_->get_latest();
-  auto lsn = current_lsn_.fetch_add(0);
+  auto lsn = current_lsn_.fetch_add(1);
   std::string _val;
   auto ret = mut_->get({key, lsn}, _val);
   if (ret == true) {
