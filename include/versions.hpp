@@ -312,7 +312,6 @@ public:
   }
 
   std::shared_ptr<Version> get_latest() {
-    auto lock = std::lock_guard<std::mutex>(mutex);
     auto ret = latest;
     return ret;
   }
