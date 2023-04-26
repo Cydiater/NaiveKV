@@ -91,22 +91,25 @@ RetCode Engine::remove(const Key &key) {
     auto ret = mut_->get({key, lsn}, _val);
     if (ret == true)
       goto do_remove;
-    if (ret == false)
+    if (ret == false) {
       return kNotFound;
+    }
     if (imm_ != nullptr) {
       ret = imm_->get({key, lsn}, _val);
       if (ret == true)
         goto do_remove;
-      if (ret == false)
+      if (ret == false) {
         return kNotFound;
+      }
     }
     if (version != nullptr) {
       ret = version->get({key, lsn}, _val);
       if (ret == true) {
         goto do_remove;
       }
-      if (ret == false)
+      if (ret == false) {
         return kNotFound;
+      }
     }
     return kNotFound;
   do_remove:

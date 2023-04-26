@@ -76,16 +76,22 @@ public:
 
   void flush() {
     assert(mode == Mode::Logging);
-    std::fflush(mem_fd);
+    auto ret = std::fflush(mem_fd);
+    std::ignore = ret;
+    assert(ret == 0);
   }
 
   void flush_and_reset() {
     auto lock = std::lock_guard<std::mutex>(mutex_);
     flush();
-    std::fclose(mem_fd);
+    auto ret = std::fclose(mem_fd);
+    assert(ret == 0);
+    std::ignore = ret;
     assert(!std::filesystem::exists(filename_imm_log));
-    std::rename(filename_mem_log.c_str(), filename_imm_log.c_str());
+    ret = std::rename(filename_mem_log.c_str(), filename_imm_log.c_str());
+    assert(ret == 0);
     mem_fd = std::fopen(filename_mem_log.c_str(), "a");
+    assert(mem_fd != NULL);
     log_size = 0;
   }
 

@@ -63,9 +63,7 @@ public:
 
   std::shared_ptr<Version> create_next_version(
       const std::string &base_dir, uint32_t &table_number,
-      const std::vector<std::vector<std::string>> &new_tables,
-      const std::vector<std::vector<std::string>> &rm_tables) const {
-    std::ignore = rm_tables;
+      const std::vector<std::vector<std::string>> &new_tables) const {
     auto next_version = std::make_shared<Version>(*this);
     for (auto &filename : new_tables[0]) {
       next_version->max_id = table_number;
@@ -98,6 +96,7 @@ public:
     }
     if (levels.size() == 0) {
       levels.push_back({});
+      last_compaction_key.push_back({});
     }
     std::pair<int, int> next_level_merge_range(0, -1);
     for (int i = 0; i < static_cast<int>(levels[0].size()); i++) {
@@ -152,12 +151,68 @@ public:
     return next_version;
   }
 
-  std::shared_ptr<Version>
-  create_next_version_by_compacting_level_i(const std::string &base_dir,
-                                            uint32_t lvl_idx) {
-    std::ignore = base_dir;
-    std::ignore = lvl_idx;
-    return nullptr;
+  std::shared_ptr<Version> create_next_version_by_compacting_level_i(
+      const std::string &base_dir, uint32_t lvl_idx, uint32_t &table_number) {
+    printf("perform compaction on level %u\n", lvl_idx);
+    if (levels.size() <= lvl_idx + 1) {
+      levels.push_back({});
+      last_compaction_key.push_back({});
+    }
+    auto start_key =
+        last_compaction_key[lvl_idx].value_or(levels[lvl_idx][0]->get_first());
+    uint32_t this_level_idx = 0;
+    while (this_level_idx < levels[lvl_idx].size()) {
+      if (levels[lvl_idx][this_level_idx]->get_first() >= start_key)
+        break;
+      this_level_idx += 1;
+    }
+    this_level_idx %= levels[lvl_idx].size();
+    printf("this_level_idx = %d\n", this_level_idx);
+    auto left = levels[lvl_idx][this_level_idx]->get_first(),
+         right = levels[lvl_idx][this_level_idx]->get_last();
+    std::pair<int, int> next_level_merge_range(0, -1);
+    for (int i = 0; i < static_cast<int>(levels[lvl_idx + 1].size()); i++) {
+      if (levels[lvl_idx + 1][i]->get_last() < left ||
+          levels[lvl_idx + 1][i]->get_first() > right)
+        continue;
+      if (i > next_level_merge_range.second)
+        next_level_merge_range.second = i;
+      else {
+        next_level_merge_range.first = i;
+        next_level_merge_range.second = i;
+      }
+    }
+    std::vector<std::unique_ptr<OrderedIterater>> sources;
+    sources.push_back(std::unique_ptr<OrderedIterater>(
+        levels[lvl_idx][this_level_idx]->get_ordered_iterator()));
+    for (auto i = next_level_merge_range.first;
+         i <= next_level_merge_range.second; i++) {
+      sources.push_back(std::unique_ptr<OrderedIterater>(
+          levels[lvl_idx + 1][i]->get_ordered_iterator()));
+    }
+    auto builder = SSTableBuilder(std::move(sources));
+    std::vector<std::string> tmp_sstables;
+    while (true) {
+      auto build = builder.build();
+      if (build == std::nullopt)
+        break;
+      tmp_sstables.push_back(build.value());
+    }
+    auto next_version = std::make_shared<Version>(*this);
+    next_version->last_compaction_key[lvl_idx] = right;
+    next_version->levels[lvl_idx].erase(next_version->levels[lvl_idx].begin() +
+                                        this_level_idx);
+    for (auto it = tmp_sstables.rbegin(); it != tmp_sstables.rend(); it++) {
+      auto &filename = *it;
+      auto target_filename =
+          base_dir + "/sst." + std::to_string(table_number++);
+      std::filesystem::rename(filename, target_filename);
+      auto base = next_version->levels[lvl_idx + 1].begin();
+      next_version->levels[lvl_idx + 1].insert(
+          base + next_level_merge_range.first,
+          std::make_shared<SSTable>(target_filename));
+    }
+    return next_version;
   }
 
   void dump(const std::string &filename) const {
@@ -209,8 +264,9 @@ public:
     }
     for (auto &lvl : levels) {
       auto ret = get(lvl, key, value);
-      if (ret != std::nullopt)
+      if (ret != std::nullopt) {
         return ret;
+      }
     }
     return std::nullopt;
   }
@@ -277,7 +333,7 @@ public:
     }
     auto lock = std::lock_guard<std::mutex>(mutex);
     auto next_version =
-        latest->create_next_version(base_dir, table_number, {new_tables}, {});
+        latest->create_next_version(base_dir, table_number, {new_tables});
     add_version(next_version);
   }
 
@@ -293,7 +349,8 @@ public:
       uint32_t bs = 10, i = 0;
       for (auto &lvl : latest->levels) {
         if (lvl.size() > bs) {
-          next = latest->create_next_version_by_compacting_level_i(base_dir, i);
+          next = latest->create_next_version_by_compacting_level_i(
+              base_dir, i, table_number);
           break;
         }
         bs *= 10;
