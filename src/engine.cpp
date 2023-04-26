@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "interfaces.h"
-#include "memtable.hpp"
+#include "ordered_iteratable.hpp"
+
 #include <cstdio>
 #include <memory>
 #include <mutex>
@@ -163,13 +164,82 @@ RetCode Engine::sync() {
 
 RetCode Engine::visit(const Key &lower, const Key &upper,
                       const Visitor &visitor) {
-  std::ignore = lower;
-  std::ignore = upper;
-  std::ignore = visitor;
-  return kNotSupported;
+  auto lock = std::shared_lock<std::shared_mutex>(checking_mem);
+  auto lsn = current_lsn_.fetch_add(1);
+  auto latest = versions_->get_latest();
+  auto key = std::make_pair(lower, lsn);
+  std::set<std::pair<InternalKV, OrderedIterater *>> ds;
+  std::optional<InternalKV> imm_last, mut_last;
+  if (imm_ != nullptr)
+    imm_last = imm_->lowerbound(key, {upper, lsn});
+  if (mut_ != nullptr)
+    mut_last = mut_->lowerbound(key, {upper, lsn});
+  std::vector<std::unique_ptr<OrderedIterater>> sources;
+  std::map<std::string, std::string> check_kv;
+  if (latest != nullptr) {
+    sources = latest->fetch_sources({lower, lsn}, {upper, lsn});
+    for (auto &source : sources) {
+      auto kv = source->next();
+      if (kv == std::nullopt)
+        continue;
+      ds.insert({kv.value(), source.get()});
+    }
+  }
+  std::map<std::string, std::string> checking_kv;
+  while (true) {
+    std::optional<InternalKV> m = std::nullopt;
+    if (imm_last.has_value())
+      m = std::min(m.value_or(imm_last.value()), imm_last.value());
+    if (mut_last.has_value())
+      m = std::min(m.value_or(mut_last.value()), mut_last.value());
+    if (!ds.empty()) {
+      auto it = ds.begin();
+      auto kv = it->first;
+      m = std::min(m.value_or(kv), kv);
+    }
+    if (m == std::nullopt) {
+      break;
+    }
+    if (m.value().second.second)
+      checking_kv.erase(checking_kv.find(m.value().first.first));
+    else
+      checking_kv.insert({m.value().first.first, m.value().second.first});
+    if (checking_kv.size() == 2) {
+      auto it = checking_kv.begin();
+      auto kv = *it;
+      visitor(kv.first, kv.second);
+      checking_kv.erase(it);
+    }
+    TaggedKey next_key = {m.value().first.first, m.value().first.second + 1};
+    if (m == imm_last) {
+      imm_last = imm_->lowerbound(next_key, {upper, lsn});
+    } else if (m == mut_last) {
+      mut_last = mut_->lowerbound(next_key, {upper, lsn});
+    } else {
+      auto it = ds.begin();
+      auto source = it->second;
+      ds.erase(it);
+      while (true) {
+        auto kv = source->next();
+        if (kv == std::nullopt ||
+            kv.value().first >= std::make_pair(upper, lsn))
+          break;
+        if (kv.value().first.second <= lsn) {
+          ds.insert({kv.value(), source});
+          break;
+        }
+      }
+    }
+  }
+  if (!checking_kv.empty()) {
+    auto it = checking_kv.begin();
+    auto kv = *it;
+    visitor(kv.first, kv.second);
+  }
+  return kSucc;
 }
 
-RetCode Engine::garbage_collect() { return kNotSupported; }
+RetCode Engine::garbage_collect() { return kSucc; }
 
 std::shared_ptr<IROEngine> Engine::snapshot() { return nullptr; }
 

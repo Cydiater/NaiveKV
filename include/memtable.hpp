@@ -23,6 +23,21 @@ public:
   Memtable(const std::vector<std::pair<TaggedKey, TaggedValue>> &init)
       : kv_(init.begin(), init.end()) {}
 
+  std::optional<InternalKV> lowerbound(const TaggedKey &key,
+                                       const TaggedKey &upper) {
+    auto lock = std::shared_lock<std::shared_mutex>(mutex_);
+    auto it = kv_.lower_bound(key);
+    while (it != kv_.end()) {
+      auto tmp = *it;
+      if (tmp.first >= upper)
+        return std::nullopt;
+      if (tmp.first.second < key.second)
+        return tmp;
+      it++;
+    }
+    return std::nullopt;
+  }
+
   std::optional<bool> get(const TaggedKey &key, std::string &value) {
     auto lock = std::shared_lock<std::shared_mutex>(mutex_);
     auto fetched_it = fetch_const_iter(key);

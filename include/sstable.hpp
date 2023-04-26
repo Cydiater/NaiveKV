@@ -82,7 +82,8 @@ class SSTableIterator : public OrderedIterater {
 public:
   SSTableIterator(FILE *fd_, uint64_t cur_, uint64_t end_, bool owner_)
       : fd(fd_), cur(cur_), end(end_), buf_offset(-1), owner(owner_){};
-  std::optional<InternalKV> next() override {
+
+  std::optional<InternalKV> get() {
     if (cur == end)
       return std::nullopt;
     if (buf_offset == -1) {
@@ -95,9 +96,17 @@ public:
                               static_cast<uint64_t>(kMaxKeyValueSize)));
     if (kv == std::nullopt) {
       alloc();
-      return next();
+      return get();
     }
-    cur = _cur + buf_offset;
+    return kv;
+  }
+
+  std::optional<InternalKV> next() override {
+    auto kv = get();
+    if (kv == std::nullopt)
+      return std::nullopt;
+    cur += 4 + kv.value().first.first.length() + 8 +
+           kv.value().second.first.length() + 4 + 1;
     return kv;
   }
 
@@ -305,11 +314,8 @@ public:
     return fds[i];
   }
 
-  std::optional<bool> get(const TaggedKey &key, std::string &value,
-                          uint32_t &lsn) {
+  uint32_t get_target_block(const TaggedKey &key) {
     auto fd = get_or_create_fd(std::this_thread::get_id());
-    if (fd == NULL)
-      throw std::runtime_error("NULL file descriptor");
     int l = 0, r = offsets.size() - 1, m;
     while (l + 1 < r) {
       m = (l + r) / 2;
@@ -320,26 +326,50 @@ public:
         r = m;
       }
     }
-    uint32_t target_block = 0;
     if (get_key(fd, offsets[r].second) <= key) {
-      target_block = r;
+      return r;
     } else if (get_key(fd, offsets[l].second) <= key) {
-      target_block = l;
+      return l;
     } else {
-      return std::nullopt;
+      return offsets.size();
     }
+  }
+
+  std::optional<bool> get(const TaggedKey &key, std::string &value,
+                          uint32_t &lsn) {
+    auto target_block = get_target_block(key);
+    if (target_block == offsets.size())
+      return std::nullopt;
     uint32_t start = 0;
     if (target_block > 0) {
       start = offsets[target_block - 1].first;
     }
     uint32_t end = offsets[target_block].first;
+    auto fd = get_or_create_fd(std::this_thread::get_id());
     auto ret = get(fd, start, end, key, value, lsn);
     return ret;
   }
 
-  OrderedIterater *get_ordered_iterator() {
+  OrderedIterater *get_ordered_iterator(
+      const std::optional<TaggedKey> &lowerbound = std::nullopt) {
     auto fd = std::fopen(filename_.c_str(), "r");
-    return new SSTableIterator(fd, 0, offsets[0].second, true);
+    if (lowerbound == std::nullopt) {
+      return new SSTableIterator(fd, 0, offsets[0].second, true);
+    }
+    auto target_block = get_target_block(lowerbound.value());
+    if (target_block == offsets.size())
+      throw std::runtime_error("expected to be overlapped");
+    auto source = new SSTableIterator(fd, offsets[target_block].first,
+                                      offsets[0].second, true);
+    while (true) {
+      auto kv = source->get();
+      if (kv == std::nullopt)
+        throw std::runtime_error("expected to be overlapped");
+      if (kv.value().first >= lowerbound.value())
+        break;
+      source->next();
+    }
+    return source;
   }
 
   const TaggedKey get_first() const { return first; }

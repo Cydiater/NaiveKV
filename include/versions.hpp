@@ -284,6 +284,26 @@ public:
     return std::nullopt;
   }
 
+  std::vector<std::unique_ptr<OrderedIterater>>
+  fetch_sources(const TaggedKey &lower, const TaggedKey &upper) {
+    std::vector<std::unique_ptr<OrderedIterater>> sources = {};
+    for (auto &s : level0) {
+      if (s->get_first() >= upper || s->get_last() < lower)
+        continue;
+      sources.push_back(
+          std::unique_ptr<OrderedIterater>(s->get_ordered_iterator(lower)));
+    }
+    for (auto &lvl : levels) {
+      for (auto &s : lvl) {
+        if (s->get_first() >= upper || s->get_last() < lower)
+          continue;
+        sources.push_back(
+            std::unique_ptr<OrderedIterater>(s->get_ordered_iterator(lower)));
+      }
+    }
+    return sources;
+  }
+
   friend Versions;
 
 private:
