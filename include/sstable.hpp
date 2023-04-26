@@ -356,15 +356,17 @@ public:
     if (lowerbound == std::nullopt) {
       return new SSTableIterator(fd, 0, offsets[0].second, true);
     }
+    assert(lowerbound <= get_last());
     auto target_block = get_target_block(lowerbound.value());
-    if (target_block == offsets.size())
-      throw std::runtime_error("expected to be overlapped");
-    auto source = new SSTableIterator(fd, offsets[target_block].first,
-                                      offsets[0].second, true);
+    if (target_block == offsets.size()) {
+      target_block = 0;
+    }
+    auto start = target_block == 0 ? 0 : offsets[target_block - 1].first;
+    auto source = new SSTableIterator(fd, start, offsets[0].second, true);
     while (true) {
       auto kv = source->get();
       if (kv == std::nullopt)
-        throw std::runtime_error("expected to be overlapped");
+        throw std::runtime_error("expected to be overlapped 2");
       if (kv.value().first >= lowerbound.value())
         break;
       source->next();

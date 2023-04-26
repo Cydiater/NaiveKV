@@ -56,6 +56,21 @@ private:
   std::thread bg_work;
 };
 
+class ROEngine : public IROEngine {
+
+public:
+  ROEngine(uint64_t lsn, std::shared_ptr<Version> version)
+      : lsn_(lsn), version_(version){};
+
+  RetCode get(const Key &key, Value &value) override;
+  RetCode visit(const Key &lower, const Key &upper,
+                const Visitor &visitor) override;
+
+private:
+  uint64_t lsn_;
+  std::shared_ptr<Version> version_;
+};
+
 } // namespace kvs
 
 #endif // INCLUDE_ENGINE_H_

@@ -4,6 +4,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <queue>
 #include <shared_mutex>
 
 #include "defines.h"
@@ -23,19 +24,24 @@ public:
   Memtable(const std::vector<std::pair<TaggedKey, TaggedValue>> &init)
       : kv_(init.begin(), init.end()) {}
 
-  std::optional<InternalKV> lowerbound(const TaggedKey &key,
-                                       const TaggedKey &upper) {
+  std::deque<InternalKV> lowerbound(const TaggedKey &lower,
+                                    const TaggedKey &upper) {
     auto lock = std::shared_lock<std::shared_mutex>(mutex_);
-    auto it = kv_.lower_bound(key);
+    auto it = kv_.lower_bound(lower);
+    std::deque<InternalKV> res;
     while (it != kv_.end()) {
       auto tmp = *it;
-      if (tmp.first >= upper)
-        return std::nullopt;
-      if (tmp.first.second < key.second)
-        return tmp;
+      if (tmp.first > upper)
+        break;
+      if (tmp.first.second < upper.second) {
+        if (!res.empty() && res.back().first.first == tmp.first.first) {
+          res.pop_back();
+        }
+        res.push_back(tmp);
+      }
       it++;
     }
-    return std::nullopt;
+    return res;
   }
 
   std::optional<bool> get(const TaggedKey &key, std::string &value) {
