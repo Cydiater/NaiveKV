@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -28,50 +29,89 @@ inline void checked_fread(void *ptr, uint32_t len, FILE *fd) {
   }
 }
 
-inline InternalKV get_kv(FILE *fd, uint32_t &offset) {
-  auto ret = std::fseek(fd, offset, SEEK_SET);
-  assert(ret == 0);
-  std::ignore = ret;
+inline std::optional<InternalKV> get_kv(const char *buf, uint64_t &cur,
+                                        const uint64_t end) {
   uint32_t key_len;
-  checked_fread(&key_len, 4, fd);
-  offset += 4;
+  if (cur + 4 >= end)
+    return std::nullopt;
+  std::memcpy(&key_len, buf + cur, 4);
+  cur += 4;
   char key_buf[key_len];
-  checked_fread(key_buf, key_len, fd);
-  offset += key_len;
+  if (cur + key_len >= end)
+    return std::nullopt;
+  std::memcpy(key_buf, buf + cur, key_len);
+  cur += key_len;
   uint64_t lsn;
-  checked_fread(&lsn, 8, fd);
-  offset += 8;
+  if (cur + 8 >= end)
+    return std::nullopt;
+  std::memcpy(&lsn, buf + cur, 8);
+  cur += 8;
   uint32_t val_len;
-  checked_fread(&val_len, 4, fd);
-  offset += 4;
+  if (cur + 4 >= end)
+    return std::nullopt;
+  std::memcpy(&val_len, buf + cur, 4);
+  cur += 4;
   char val_buf[val_len];
-  checked_fread(val_buf, val_len, fd);
-  offset += val_len;
+  if (cur + val_len >= end)
+    return std::nullopt;
+  std::memcpy(val_buf, buf + cur, val_len);
+  cur += val_len;
   bool deleted;
-  checked_fread(&deleted, 1, fd);
-  offset += 1;
-  return {{std::string(key_buf, key_len), lsn},
-          {std::string(val_buf, val_len), deleted}};
+  if (cur + 1 > end)
+    return std::nullopt;
+  std::memcpy(&deleted, buf + cur, 1);
+  cur += 1;
+  InternalKV kv = {{std::string(key_buf, key_len), lsn},
+                   {std::string(val_buf, val_len), deleted}};
+  return kv;
 }
 
 class SSTableIterator : public OrderedIterater {
 
+  void alloc() {
+    buf_offset = cur;
+    size_t len = std::min(kMaxKeyValueSize, static_cast<size_t>(end - cur));
+    auto ret1 = std::fseek(fd, buf_offset, SEEK_SET);
+    assert(ret1 == 0);
+    auto ret2 = std::fread(buf, 1, len, fd);
+    assert(ret2 == len);
+    std::ignore = ret1;
+    std::ignore = ret2;
+  }
+
 public:
-  SSTableIterator(FILE *fd_, uint64_t end_) : fd(fd_), end(end_){};
+  SSTableIterator(FILE *fd_, uint64_t cur_, uint64_t end_, bool owner_)
+      : fd(fd_), cur(cur_), end(end_), buf_offset(-1), owner(owner_){};
   std::optional<InternalKV> next() override {
-    assert(cur <= end);
     if (cur == end)
       return std::nullopt;
-    auto kv = get_kv(fd, cur);
+    if (buf_offset == -1) {
+      buf_offset = cur;
+      alloc();
+    }
+    auto _cur = cur - buf_offset;
+    auto kv = get_kv(buf, _cur,
+                     std::min(static_cast<uint64_t>(end - buf_offset),
+                              static_cast<uint64_t>(kMaxKeyValueSize)));
+    if (kv == std::nullopt) {
+      alloc();
+      return next();
+    }
+    cur = _cur + buf_offset;
     return kv;
   }
 
-  ~SSTableIterator() { std::fclose(fd); }
+  ~SSTableIterator() {
+    if (owner)
+      std::fclose(fd);
+  }
 
 private:
   FILE *fd;
-  uint32_t cur{0};
-  uint64_t end;
+  uint64_t cur{0}, end;
+  int64_t buf_offset;
+  char buf[kMaxKeyValueSize];
+  bool owner;
 };
 
 class SSTableBuilder {
@@ -227,14 +267,16 @@ public:
   std::optional<bool> get(FILE *fd, uint32_t start, uint32_t end,
                           const TaggedKey &key, std::string &value,
                           uint32_t &lsn) const {
+    auto iter = SSTableIterator(fd, start, end, false);
     std::optional<InternalKV> ans = std::nullopt;
-    while (start < end) {
-      auto kv = get_kv(fd, start);
-      if (kv.first <= key) {
-        ans = kv;
-      } else {
+    while (true) {
+      auto kv = iter.next();
+      if (kv == std::nullopt)
         break;
-      }
+      if (kv.value().first <= key)
+        ans = kv.value();
+      else
+        break;
     }
     if (!ans.has_value())
       return std::nullopt;
@@ -250,6 +292,7 @@ public:
   }
 
   FILE *get_or_create_fd(const std::thread::id i) {
+    auto lock = std::lock_guard(mu);
     if (fds.find(i) == fds.end()) {
       auto fd = std::fopen(filename_.c_str(), "rb");
       if (fd == NULL || std::ferror(fd)) {
@@ -265,6 +308,8 @@ public:
   std::optional<bool> get(const TaggedKey &key, std::string &value,
                           uint32_t &lsn) {
     auto fd = get_or_create_fd(std::this_thread::get_id());
+    if (fd == NULL)
+      throw std::runtime_error("NULL file descriptor");
     int l = 0, r = offsets.size() - 1, m;
     while (l + 1 < r) {
       m = (l + r) / 2;
@@ -294,7 +339,7 @@ public:
 
   OrderedIterater *get_ordered_iterator() {
     auto fd = std::fopen(filename_.c_str(), "r");
-    return new SSTableIterator(fd, offsets[0].second);
+    return new SSTableIterator(fd, 0, offsets[0].second, true);
   }
 
   const TaggedKey get_first() const { return first; }
@@ -303,6 +348,7 @@ public:
 private:
   TaggedKey first, last;
   std::string filename_;
+  std::mutex mu;
   std::map<std::thread::id, FILE *> fds;
   std::vector<std::pair<uint32_t, uint32_t>> offsets;
 };
