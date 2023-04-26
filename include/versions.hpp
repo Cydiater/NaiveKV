@@ -153,7 +153,6 @@ public:
 
   std::shared_ptr<Version> create_next_version_by_compacting_level_i(
       const std::string &base_dir, uint32_t lvl_idx, uint32_t &table_number) {
-    printf("perform compaction on level %u\n", lvl_idx);
     if (levels.size() <= lvl_idx + 1) {
       levels.push_back({});
       last_compaction_key.push_back({});
@@ -167,7 +166,6 @@ public:
       this_level_idx += 1;
     }
     this_level_idx %= levels[lvl_idx].size();
-    printf("this_level_idx = %d\n", this_level_idx);
     auto left = levels[lvl_idx][this_level_idx]->get_first(),
          right = levels[lvl_idx][this_level_idx]->get_last();
     std::pair<int, int> next_level_merge_range(0, -1);
@@ -235,17 +233,32 @@ public:
   uint32_t get_max_id() const { return max_id; }
 
   std::optional<bool> get(const std::vector<std::shared_ptr<SSTable>> &lvl,
-                          const TaggedKey &key, std::string &value) const {
+                          const bool overlapping, const TaggedKey &key,
+                          std::string &value) const {
     std::optional<InternalKV> ans = std::nullopt;
-    for (auto &s : lvl) {
-      std::string val;
-      uint32_t lsn;
-      auto ret = s->get(key, val, lsn);
-      if (ret.has_value()) {
-        InternalKV tmp = {{key.first, lsn}, {val, !ret.value()}};
-        if (ans == std::nullopt || tmp > ans.value()) {
-          ans = tmp;
+    std::string val;
+    uint32_t lsn;
+    if (overlapping) {
+      for (auto &s : lvl) {
+        auto ret = s->get(key, val, lsn);
+        if (ret.has_value()) {
+          InternalKV tmp = {{key.first, lsn}, {val, !ret.value()}};
+          if (ans == std::nullopt || tmp > ans.value()) {
+            ans = tmp;
+          }
         }
+      }
+    } else {
+      auto it = std::lower_bound(
+          lvl.begin(), lvl.end(), key,
+          [](const std::shared_ptr<SSTable> &lhs, const TaggedKey &key) {
+            return lhs->get_last() < key;
+          });
+      if (it == lvl.end())
+        return std::nullopt;
+      auto ret = (*it)->get(key, val, lsn);
+      if (ret.has_value()) {
+        ans = {{key.first, lsn}, {val, !ret.value()}};
       }
     }
     if (ans == std::nullopt)
@@ -258,12 +271,12 @@ public:
   }
 
   std::optional<bool> get(const TaggedKey &key, std::string &value) const {
-    auto ret = get(level0, key, value);
+    auto ret = get(level0, true, key, value);
     if (ret != std::nullopt) {
       return ret;
     }
     for (auto &lvl : levels) {
-      auto ret = get(lvl, key, value);
+      auto ret = get(lvl, false, key, value);
       if (ret != std::nullopt) {
         return ret;
       }

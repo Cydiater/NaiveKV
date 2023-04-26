@@ -30,9 +30,9 @@ Engine::Engine(const std::string &path, EngineOptions options)
 
 void Engine::background() {
   while (true) {
-    do_compaction.acquire();
     if (killed)
       break;
+    do_compaction.acquire();
     {
       auto lock = std::unique_lock<std::shared_mutex>(checking_mem);
       if (imm_ != nullptr) {
