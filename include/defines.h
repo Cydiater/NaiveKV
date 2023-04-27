@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <cstring>
 #include <utility>
 
 typedef std::pair<std::string, uint64_t /* LSN */> TaggedKey;
