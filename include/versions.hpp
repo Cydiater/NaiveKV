@@ -240,8 +240,6 @@ public:
     uint32_t lsn;
     if (overlapping) {
       for (auto &s : lvl) {
-        if (key < s->get_first() || key > s->get_last())
-          continue;
         auto ret = s->get(key, val, lsn);
         if (ret.has_value()) {
           InternalKV tmp = {{key.first, lsn}, {val, !ret.value()}};

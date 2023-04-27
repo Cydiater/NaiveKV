@@ -18,8 +18,10 @@ Engine::Engine(const std::string &path, EngineOptions options)
   const auto &[imm_init, mem_init] = log_mgr_->dump_for_recovering();
   imm_ = nullptr;
   mut_ = std::make_unique<Memtable>(mem_init);
-  if (!imm_init.empty())
+  if (!imm_init.empty()) {
     imm_ = std::make_unique<Memtable>(imm_init);
+    imm_->make_imm();
+  }
   for (auto &kv : imm_init)
     current_lsn_ = std::max(kv.first.second, current_lsn_.load());
   for (auto &kv : mem_init)
@@ -35,10 +37,10 @@ void Engine::background() {
       break;
     do_compaction.acquire();
     {
+      auto lock = std::unique_lock<std::shared_mutex>(checking_mem);
       if (imm_ != nullptr) {
         versions_->store_immtable(imm_.get());
         log_mgr_->rm_imm_log();
-        auto lock = std::unique_lock<std::shared_mutex>(checking_mem);
         imm_ = nullptr;
       }
     }
@@ -62,6 +64,7 @@ void Engine::check_mem() {
     log_mgr_->flush_and_reset();
     auto lock = std::unique_lock<std::shared_mutex>(checking_mem);
     imm_.swap(mut_);
+    imm_->make_imm();
     mut_ = std::make_unique<Memtable>();
     schedule_bg();
   }
@@ -85,8 +88,8 @@ RetCode Engine::put(const Key &key, const Value &value) {
 
 RetCode Engine::remove(const Key &key) {
   {
+    std::shared_ptr<Version> version = nullptr;
     auto lock = std::shared_lock<std::shared_mutex>(checking_mem);
-    auto version = versions_->get_latest();
     auto lsn = current_lsn_.fetch_add(1);
     std::string _val;
     auto ret = mut_->get({key, lsn}, _val);
@@ -103,6 +106,7 @@ RetCode Engine::remove(const Key &key) {
         return kNotFound;
       }
     }
+    version = versions_->get_latest();
     if (version != nullptr) {
       ret = version->get({key, lsn}, _val);
       if (ret == true) {
@@ -126,7 +130,6 @@ RetCode Engine::get(const Key &key, Value &value) {
   std::string _val;
   {
     auto lock = std::shared_lock<std::shared_mutex>(checking_mem);
-    version = versions_->get_latest();
     lsn = current_lsn_.fetch_add(1);
     auto ret = mut_->get({key, lsn}, _val);
     if (ret == true) {
@@ -147,6 +150,7 @@ RetCode Engine::get(const Key &key, Value &value) {
       }
     }
   }
+  version = versions_->get_latest();
   if (version != nullptr) {
     auto ret = version->get({key, lsn}, _val);
     if (ret == true) {
@@ -262,7 +266,9 @@ std::shared_ptr<IROEngine> Engine::snapshot() {
   }
   if (mut_ != nullptr) {
     log_mgr_->flush_and_reset();
+    mut_->make_imm();
     versions_->store_immtable(mut_.get());
+    mut_ = std::make_unique<Memtable>();
   }
   auto snapshot = std::make_shared<ROEngine>(lsn, versions_->get_latest());
   return snapshot;

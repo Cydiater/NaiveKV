@@ -5,6 +5,7 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <set>
 #include <shared_mutex>
 
 #include "defines.h"
@@ -14,6 +15,18 @@
 
 namespace kvs {
 
+const size_t sharding_num = 16;
+
+const uint64_t bs = 2333;
+
+inline uint64_t hash(const std::string &s) {
+  uint64_t cur = 0;
+  for (auto &c : s) {
+    cur = cur * bs + c;
+  }
+  return cur;
+}
+
 class Memtable {
 
 public:
@@ -21,25 +34,38 @@ public:
   using Iter = Map::const_iterator;
 
   Memtable() = default;
-  Memtable(const std::vector<std::pair<TaggedKey, TaggedValue>> &init)
-      : kv_(init.begin(), init.end()) {}
+  Memtable(const std::vector<std::pair<TaggedKey, TaggedValue>> &init) {
+    for (auto &kv : init) {
+      kv_[get_target(kv.first)].insert(kv);
+    }
+  }
+
+  inline int get_target(const TaggedKey &key) {
+    return imm ? 0 : hash(key.first) % sharding_num;
+  }
 
   std::deque<InternalKV> lowerbound(const TaggedKey &lower,
                                     const TaggedKey &upper) {
-    auto lock = std::shared_lock<std::shared_mutex>(mutex_);
-    auto it = kv_.lower_bound(lower);
     std::deque<InternalKV> res;
-    while (it != kv_.end()) {
-      auto tmp = *it;
-      if (tmp.first > upper)
-        break;
-      if (tmp.first.second < upper.second) {
-        if (!res.empty() && res.back().first.first == tmp.first.first) {
-          res.pop_back();
+    std::set<InternalKV> ds;
+    for (auto &kv : kv_) {
+      auto lock = std::shared_lock<std::shared_mutex>(mutex_);
+      auto it = kv.lower_bound(lower);
+      while (it != kv.end()) {
+        auto tmp = *it;
+        if (tmp.first > upper)
+          break;
+        if (tmp.first.second < upper.second) {
+          ds.insert(tmp);
         }
-        res.push_back(tmp);
+        it++;
       }
-      it++;
+    }
+    for (auto &kv : ds) {
+      if (!res.empty() && res.back().first.first == kv.first.first) {
+        res.pop_back();
+      }
+      res.push_back(kv);
     }
     return res;
   }
@@ -74,14 +100,23 @@ public:
 
   OrderedIterater *get_ordered_iterator();
 
+  void make_imm() {
+    imm = true;
+    for (size_t i = 1; i < sharding_num; i++) {
+      kv_[0].insert(kv_[i].begin(), kv_[i].end());
+      kv_[i].clear();
+    }
+  }
+
 private:
   std::pair<Iter, bool> logged_insert(const InternalKV &kv,
                                       LogManager *log_mgr_) {
     log_mgr_->log(kv);
-    return kv_.insert(kv);
+    return kv_[get_target(kv.first)].insert(kv);
   }
 
   std::optional<Iter> fetch_const_iter(const TaggedKey &key) {
+    auto &kv_ = this->kv_[get_target(key)];
     auto it = kv_.lower_bound(key);
     if (it == kv_.begin())
       return {};
@@ -93,7 +128,8 @@ private:
   }
 
   std::shared_mutex mutex_;
-  Map kv_;
+  Map kv_[sharding_num];
+  bool imm;
 };
 
 class MemtableIterator : public OrderedIterater {
@@ -116,7 +152,8 @@ private:
 };
 
 inline OrderedIterater *Memtable::get_ordered_iterator() {
-  return new MemtableIterator(kv_.begin(), kv_.end());
+  assert(imm);
+  return new MemtableIterator(kv_[0].begin(), kv_[0].end());
 }
 
 } // namespace kvs

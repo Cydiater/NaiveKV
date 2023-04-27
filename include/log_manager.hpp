@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
+#include <shared_mutex>
 #include <ostream>
 #include <string>
 
@@ -26,7 +27,7 @@ public:
   }
 
   void rm_imm_log() {
-    auto lock = std::lock_guard<std::mutex>(mutex_);
+    auto lock = std::unique_lock(mutex_);
     assert(mode == Mode::Logging);
     std::filesystem::remove(filename_imm_log);
   }
@@ -63,7 +64,7 @@ public:
   }
 
   void log(const InternalKV &kv) {
-    auto lock = std::lock_guard<std::mutex>(mutex_);
+    auto lock = std::shared_lock<std::shared_mutex>(mutex_);
     assert(mem_fd != NULL);
     assert(mode == Mode::Logging);
     const auto &[tagged_key, tagged_val] = kv;
@@ -82,7 +83,7 @@ public:
   }
 
   void flush_and_reset() {
-    auto lock = std::lock_guard<std::mutex>(mutex_);
+    auto lock = std::unique_lock(mutex_);
     flush();
     auto ret = std::fclose(mem_fd);
     assert(ret == 0);
@@ -103,7 +104,7 @@ private:
   const std::string filename_imm_log;
   const std::string filename_mem_log;
   FILE *mem_fd;
-  std::mutex mutex_;
+  std::shared_mutex mutex_;
   uint32_t log_size;
 };
 
